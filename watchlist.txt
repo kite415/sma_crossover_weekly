@@ -1,0 +1,6 @@
+# One ticker per line. Lines starting with # and blank lines are ignored.
+NVDA
+AAPL
+MSFT
+AMZN
+GOOGL
