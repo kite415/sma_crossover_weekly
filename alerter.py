@@ -38,7 +38,7 @@ import yfinance as yf
 # "live"  -> also evaluate the current in-progress week; such alerts are
 #            tagged "(tentative)".  Env var CONFIRM_MODE overrides this default.
 # An unset OR empty env var (scheduled runs pass "") falls back to the default.
-CONFIRM_MODE = (os.environ.get("CONFIRM_MODE") or "close").strip().lower()
+CONFIRM_MODE = (os.environ.get("CONFIRM_MODE") or "live").strip().lower()
 
 # Weekly SMAs to track. A crossover of ANY of these (in either direction)
 # triggers its own alert. Each SMA is evaluated independently -- a ticker with
