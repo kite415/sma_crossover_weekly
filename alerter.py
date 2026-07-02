@@ -3,15 +3,16 @@
 Daily weekly-SMA crossover alerter -> ntfy.
 
 For each ticker in watchlist.txt:
-  * download ~2y of daily prices (yfinance, no API key),
+  * download several years of daily prices (yfinance, no API key),
   * resample to weekly bars (W-FRI, last close of each week),
-  * compute the 10-week simple moving average,
-  * detect when the weekly close crosses its 10-week SMA in EITHER direction,
-  * fire one ntfy notification on the transition (de-duped via state.json).
+  * compute the 10-week AND 60-week simple moving averages,
+  * detect when the weekly close crosses EITHER SMA in EITHER direction,
+  * fire one ntfy notification per crossing (de-duped via state.json).
 
 Because this runs daily, we persist the last-known side (above/below) per
-ticker in state.json and only alert when that side actually flips. First run
-(or a newly added ticker) records the side silently -- no alert blast.
+ticker *per SMA* in state.json and only alert when a side actually flips.
+First run (or a newly added ticker/SMA) records the side silently -- no
+alert blast.
 """
 
 import json
@@ -39,8 +40,10 @@ import yfinance as yf
 # An unset OR empty env var (scheduled runs pass "") falls back to the default.
 CONFIRM_MODE = (os.environ.get("CONFIRM_MODE") or "close").strip().lower()
 
-SMA_WEEKS = 10
-MIN_WEEKLY_BARS = SMA_WEEKS + 1  # need a current + prior bar that both have an SMA
+# Weekly SMAs to track. A crossover of ANY of these (in either direction)
+# triggers its own alert. Each SMA is evaluated independently -- a ticker with
+# enough history for the 10-week but not the 60-week still gets 10-week alerts.
+SMA_WEEKS = [10, 60]
 
 WATCHLIST_FILE = os.environ.get("WATCHLIST_FILE", "watchlist.txt")
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
@@ -126,9 +129,15 @@ def send_ntfy(title, body, tags):
 def analyse(ticker):
     """
     Returns a dict describing the current state of the ticker, or None if it
-    can't be evaluated (no data / too few bars).
+    can't be evaluated (no data / too few bars for even the shortest SMA).
+
+    The returned dict carries a "smas" map keyed by SMA length (weeks); each
+    entry has side/sma/cross flags for that SMA. Only SMAs with enough weekly
+    history to have both a current and prior value are included.
     """
-    hist = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)
+    # Longest SMA drives how much history we need; pull generously so even the
+    # 60-week SMA has a solid runway. yfinance accepts 1y/2y/5y/10y/max.
+    hist = yf.Ticker(ticker).history(period="5y", interval="1d", auto_adjust=False)
     if hist is None or hist.empty or "Close" not in hist:
         print(f"  {ticker}: no price data returned; skipping")
         return None
@@ -150,35 +159,44 @@ def analyse(ticker):
         if incomplete:
             weekly = weekly.iloc[:-1]
 
-    if len(weekly) < MIN_WEEKLY_BARS:
+    cur_close = float(weekly.iloc[-1])
+
+    smas = {}
+    for period in SMA_WEEKS:
+        # Need a current + prior bar that both have an SMA value.
+        if len(weekly) < period + 1:
+            continue
+        sma = weekly.rolling(period).mean()
+        cur_sma = float(sma.iloc[-1])
+        prior_close = float(weekly.iloc[-2])
+        prior_sma = float(sma.iloc[-2])
+
+        side = "above" if cur_close > cur_sma else "below"
+
+        # Textbook bar-level crossover flags (for logging; firing is state-driven).
+        cross_up = cur_close > cur_sma and prior_close <= prior_sma
+        cross_down = cur_close < cur_sma and prior_close >= prior_sma
+
+        smas[period] = {
+            "side": side,
+            "sma": cur_sma,
+            "cross_up": cross_up,
+            "cross_down": cross_down,
+        }
+
+    if not smas:
         print(
             f"  {ticker}: only {len(weekly)} weekly bars "
-            f"(need {MIN_WEEKLY_BARS}); skipping"
+            f"(need {min(SMA_WEEKS) + 1}); skipping"
         )
         return None
 
-    sma = weekly.rolling(SMA_WEEKS).mean()
-
-    cur_close = float(weekly.iloc[-1])
-    cur_sma = float(sma.iloc[-1])
-    prior_close = float(weekly.iloc[-2])
-    prior_sma = float(sma.iloc[-2])
-
-    side = "above" if cur_close > cur_sma else "below"
-
-    # Textbook bar-level crossover flags (for logging; firing is state-driven).
-    cross_up = cur_close > cur_sma and prior_close <= prior_sma
-    cross_down = cur_close < cur_sma and prior_close >= prior_sma
-
     return {
         "ticker": ticker,
-        "side": side,
         "close": cur_close,
-        "sma": cur_sma,
         "tentative": tentative,
-        "cross_up": cross_up,
-        "cross_down": cross_down,
         "bar_date": weekly.index[-1].date().isoformat(),
+        "smas": smas,
     }
 
 
@@ -210,47 +228,58 @@ def main():
                 continue
             checked += 1
 
-            side = info["side"]
             prev = state.get(ticker, {})
-            prev_side = prev.get("side")
-
             tag = " (tentative)" if info["tentative"] else ""
-            print(
-                f"  {ticker}: close ${info['close']:.2f} vs "
-                f"10wk SMA ${info['sma']:.2f} -> {side}{tag} "
-                f"(prev={prev_side}, up={info['cross_up']}, down={info['cross_down']})"
-            )
 
-            fire = prev_side is not None and side != prev_side
-
-            if fire:
-                if side == "above":
-                    arrow, direction, tags = "▲", "crossed above", ["green_circle", "chart_with_upwards_trend"]
-                else:
-                    arrow, direction, tags = "▼", "crossed below", ["red_circle", "chart_with_downwards_trend"]
-
-                title = f"{ticker} {arrow} {direction}"
-                body = (
-                    f"price ${info['close']:.2f} vs 10-week SMA "
-                    f"${info['sma']:.2f}{tag}"
-                )
-                if send_ntfy(title, body, tags):
-                    alerts += 1
-                    print(f"    -> ALERT sent: {title} | {body}")
-                else:
-                    print(f"    -> alert NOT sent (ntfy failure): {title}")
-            elif prev_side is None:
-                print(f"    -> first sighting; recording side, no alert")
-
-            # Persist latest side (always), so we only fire on real flips.
-            state[ticker] = {
-                "side": side,
+            # Rebuild the ticker's state entry from scratch each run.
+            entry = {
                 "close": round(info["close"], 4),
-                "sma": round(info["sma"], 4),
                 "tentative": info["tentative"],
                 "bar_date": info["bar_date"],
                 "updated": today_et().isoformat(),
             }
+
+            for period, res in info["smas"].items():
+                key = f"sma{period}"
+                side = res["side"]
+
+                prev_side = prev.get(key, {}).get("side")
+                # Legacy migration: old state stored a single flat "side" for
+                # the 10-week SMA. Honour it so we don't re-fire on upgrade.
+                if prev_side is None and period == 10:
+                    prev_side = prev.get("side")
+
+                print(
+                    f"  {ticker}: close ${info['close']:.2f} vs "
+                    f"{period}wk SMA ${res['sma']:.2f} -> {side}{tag} "
+                    f"(prev={prev_side}, up={res['cross_up']}, down={res['cross_down']})"
+                )
+
+                fire = prev_side is not None and side != prev_side
+
+                if fire:
+                    if side == "above":
+                        arrow, direction, tags = "▲", "crossed above", ["green_circle", "chart_with_upwards_trend"]
+                    else:
+                        arrow, direction, tags = "▼", "crossed below", ["red_circle", "chart_with_downwards_trend"]
+
+                    title = f"{ticker} {arrow} {direction} {period}wk SMA"
+                    body = (
+                        f"price ${info['close']:.2f} vs {period}-week SMA "
+                        f"${res['sma']:.2f}{tag}"
+                    )
+                    if send_ntfy(title, body, tags):
+                        alerts += 1
+                        print(f"    -> ALERT sent: {title} | {body}")
+                    else:
+                        print(f"    -> alert NOT sent (ntfy failure): {title}")
+                elif prev_side is None:
+                    print(f"    -> {period}wk first sighting; recording side, no alert")
+
+                entry[key] = {"side": side, "sma": round(res["sma"], 4)}
+
+            # Persist latest sides (always), so we only fire on real flips.
+            state[ticker] = entry
 
         except Exception as exc:  # one bad ticker must not kill the run
             print(f"  {ticker}: ERROR {exc}")

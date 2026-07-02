@@ -2,7 +2,7 @@
 
 Every weekday after the US market close, this checks a watchlist and pushes an
 [ntfy](https://ntfy.sh) notification whenever a ticker's price **crosses its
-10-week simple moving average** — in **either direction**:
+10-week or 60-week simple moving average** — in **either direction**:
 
 - **▲ crossed above** → bullish signal
 - **▼ crossed below** → bearish signal
@@ -16,18 +16,20 @@ Yahoo Finance via `yfinance`).
 
 For each ticker in `watchlist.txt`:
 
-1. Download ~2 years of daily prices (`yfinance`).
+1. Download ~5 years of daily prices (`yfinance`).
 2. Resample to **weekly bars** (`W-FRI`, the last close of each week).
-3. Compute the **10-week SMA** (rolling mean over weekly closes).
-4. Detect a crossover of the latest weekly close vs. its SMA.
-5. Fire **one** ntfy notification per ticker on the *transition only*.
+3. Compute the **10-week and 60-week SMAs** (rolling means over weekly closes).
+4. Detect a crossover of the latest weekly close vs. **either** SMA.
+5. Fire **one** ntfy notification per SMA on the *transition only*.
 
 Because it runs **daily**, it persists the last-known side (`above` / `below`)
-per ticker in **`state.json`** and only alerts when that side actually flips.
+per ticker **per SMA** in **`state.json`** and only alerts when a side flips.
 The first run (and any newly added ticker) records the side **silently** — no
 alert blast for everything's current position.
 
-- Tickers with fewer than 11 weekly bars are skipped.
+- Each SMA needs its length + 1 weekly bars (11 for the 10-week, 61 for the
+  60-week). An SMA without enough history is skipped; the ticker's other SMAs
+  are still evaluated.
 - Each ticker is wrapped in try/except, so one bad symbol can't kill the run.
 - Everything checked/found is logged to the Actions console.
 
