@@ -46,7 +46,9 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- state.json; then
+          # git status --porcelain (unlike git diff) also reports the file when
+          # it's brand-new/untracked, so the very first run commits it too.
+          if [ -n "$(git status --porcelain -- state.json)" ]; then
             git add state.json
             git commit -m "Update SMA crossover state [skip ci]"
             git push
