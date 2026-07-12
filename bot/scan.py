@@ -1,0 +1,142 @@
+"""
+Scan orchestrator: universe -> data -> engine -> alert strings.
+
+Returns plain data so callers decide delivery: the Discord bot posts the
+messages; `python -m bot.scan --dry-run` prints them.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass, field
+
+from bot import alerts, db, universe
+from bot.data import build_snapshot, fetch_closes, today_et
+from bot.engine import entry_step, exit_step
+
+
+@dataclass
+class ScanResult:
+    digest: str | None = None            # one message for all new triggers
+    messages: list = field(default_factory=list)  # individual BUY/WARN/SELL
+    muted_buys: list = field(default_factory=list)
+    stats: dict = field(default_factory=dict)
+    log: list = field(default_factory=list)
+
+
+def run_scan(conn, mode="live", tickers=None):
+    today = today_et().isoformat()
+    scan_set = tickers if tickers is not None else universe.full_universe(conn)
+    result = ScanResult()
+    result.log.append(f"scan mode={mode} date={today} universe={len(scan_set)}")
+
+    closes = fetch_closes(scan_set)
+    result.log.append(f"data for {len(closes)}/{len(scan_set)} tickers")
+
+    prev_states = db.get_all_ticker_states(conn)
+    open_positions = {p["ticker"]: p for p in db.get_open_positions(conn)}
+
+    snapshots = {}
+    digest_lines = []
+    seeded = triggers = buys = 0
+
+    # ---- entry engine over the whole universe ----
+    for ticker in scan_set:
+        series = closes.get(ticker)
+        prev = prev_states.get(ticker)
+        if series is None:
+            # Data outage: keep prior state untouched, never demote/eject.
+            if prev is not None:
+                lvl = "ERROR" if ticker in open_positions else "WARN"
+                result.log.append(f"{lvl}: no data for {ticker}; state kept")
+            continue
+        snap = build_snapshot(ticker, series, mode=mode)
+        if snap is None:
+            continue
+        snapshots[ticker] = snap
+
+        was_seeded = prev is not None
+        new_state, events = entry_step(prev, snap, today)
+        db.put_ticker_state(conn, ticker, new_state)
+        if not was_seeded:
+            seeded += 1
+
+        for event in events:
+            if event["type"] == "TRIGGER":
+                triggers += 1
+                digest_lines.append(alerts.digest_line(ticker, snap, event))
+            elif event["type"] == "BUY":
+                buys += 1
+                pos = open_positions.get(ticker)
+                if pos and not pos["exit_alerted"]:
+                    # Held and no exit alert yet: mute per user rule.
+                    result.muted_buys.append(ticker)
+                    result.log.append(f"BUY for {ticker} muted (held)")
+                else:
+                    result.messages.append(alerts.buy_message(ticker, snap, event))
+
+    if digest_lines:
+        result.digest = alerts.digest_message(digest_lines)
+
+    # ---- exit engine over held positions only ----
+    for ticker, pos in open_positions.items():
+        snap = snapshots.get(ticker)
+        if snap is None:
+            result.log.append(f"ERROR: no data for held position {ticker}")
+            continue
+        flags, events = exit_step(db.position_flags(pos), snap, today)
+        db.update_position_flags(conn, pos["id"], flags)
+        for event in events:
+            if event["type"] == "WARNING":
+                result.messages.append(alerts.warning_message(ticker, snap, pos))
+            elif event["type"] == "SELL":
+                result.messages.append(alerts.sell_message(ticker, snap, pos, event))
+
+    # ---- drop state for tickers that left the universe (no open position;
+    # held tickers are always part of scan_set via full_universe) ----
+    if tickers is None:  # only on full scans, never on ad-hoc subsets
+        gone = set(prev_states) - set(scan_set)
+        if gone:
+            db.delete_ticker_states(conn, gone)
+            result.log.append(f"dropped {len(gone)} departed tickers: {sorted(gone)[:10]}")
+
+    conn.commit()
+    result.stats = {
+        "universe": len(scan_set),
+        "with_data": len(closes),
+        "seeded": seeded,
+        "triggers": triggers,
+        "buys": buys,
+        "positions": len(open_positions),
+        "alerts": len(result.messages) + (1 if result.digest else 0),
+    }
+    result.log.append(f"done: {result.stats}")
+    return result
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Run one scan (no Discord needed)")
+    ap.add_argument("--db", default="data/bot.db")
+    ap.add_argument("--mode", choices=["live", "close"], default="live")
+    ap.add_argument("--tickers", help="comma-separated subset (skips universe)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print alerts instead of anything else (scan state IS persisted to --db)")
+    args = ap.parse_args()
+
+    conn = db.connect(args.db)
+    subset = [t.strip().upper() for t in args.tickers.split(",")] if args.tickers else None
+    result = run_scan(conn, mode=args.mode, tickers=subset)
+
+    for line in result.log:
+        print(line)
+    print("---")
+    if result.digest:
+        print(result.digest, "\n")
+    for msg in result.messages:
+        print(msg, "\n")
+    if not result.digest and not result.messages:
+        print("(no alerts)")
+
+
+if __name__ == "__main__":
+    main()
