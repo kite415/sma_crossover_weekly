@@ -47,14 +47,18 @@ within a minute) and imports `watchlist.txt` into the database once. Then run
 `/scan` — the first scan seeds ~900 tickers silently (a few minutes) and
 reports what it did. Alerts begin with the first real transition after that.
 
-### Without Docker (bare Python)
+### Without Docker (conda)
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m bot.main
+conda create -n sma-bot python=3.12 -y
+conda activate sma-bot
+pip install -r requirements.txt
+python -m bot.main
 ```
 
-To keep it alive as a service:
+To keep it alive as a service, point the service at the conda env's python
+binary directly (services don't run `conda activate`; find yours with
+`conda env list` — e.g. `~/miniconda3/envs/sma-bot/bin/python`):
 
 - **Raspberry Pi (systemd)** — `/etc/systemd/system/sma-bot.service`:
 
@@ -65,7 +69,7 @@ To keep it alive as a service:
 
   [Service]
   WorkingDirectory=/home/pi/sma_crossover_weekly
-  ExecStart=/home/pi/sma_crossover_weekly/.venv/bin/python -m bot.main
+  ExecStart=/home/pi/miniconda3/envs/sma-bot/bin/python -m bot.main
   Restart=always
   RestartSec=10
 
@@ -76,7 +80,8 @@ To keep it alive as a service:
   then `sudo systemctl enable --now sma-bot`.
 
 - **Mac (launchd)** — `~/Library/LaunchAgents/com.sma.bot.plist` with
-  `KeepAlive` + `RunAtLoad` pointing at the same command, then
+  `KeepAlive` + `RunAtLoad` pointing at the same command (e.g.
+  `~/miniconda3/envs/sma-bot/bin/python -m bot.main`), then
   `launchctl load ~/Library/LaunchAgents/com.sma.bot.plist`.
   Note: the Mac must not sleep for the 17:30 scan to fire
   (System Settings → Energy → prevent automatic sleeping, or use a Pi).
