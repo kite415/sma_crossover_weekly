@@ -99,13 +99,15 @@ def test_trigger_when_monthly_gate_completes_last_hims_case():
     assert state2["phase"] == TRIGGERED
 
 
-def test_trigger_on_5wk_reclaim_when_everything_else_holds():
-    # The MU case: above 10/20/60wk + gate, but below the 5wk.
+def test_5wk_reclaim_does_not_trigger():
+    # User feedback 2026-07-14: 5wk crossings are noise. A ticker above
+    # 10/20/60wk + gate is live regardless of the 5wk; reclaiming the 5wk
+    # is a non-event for the entry engine.
     state = seed_entry(snap(above_5w=False), TODAY)
-    assert state["setup_live"] is False
-    state2, events = entry_step(state, snap(daily=BELOW_10), TODAY)
-    assert events[0]["legs"] == ["reclaimed 5wk SMA"]
-    assert state2["phase"] == TRIGGERED
+    assert state["setup_live"] is True  # 5wk plays no role in liveness
+    state2, events = entry_step(state, snap(daily=ALL_ABOVE), TODAY)
+    assert events == []
+    assert state2["phase"] == IDLE
 
 
 def test_multiple_legs_named_together():
@@ -119,42 +121,35 @@ def test_multiple_legs_named_together():
 # --------------------------------------------------------------------------- #
 
 def test_sma_becoming_computable_does_not_trigger():
-    # Seeded without a 60wk SMA (young ticker); history reaches 61 bars and
-    # the 60wk flag appears as True -> setup flips live with no price event.
+    # A young ticker without a 60wk SMA is judged on 10/20 alone.
     young = {"10": True, "20": True}
     state = seed_entry(snap(weekly=young, monthly={"10": True, "20": True}), TODAY)
     assert state["setup_live"] is True  # 60 skipped, 10 & 20 above
 
-    # Now suppose it was NOT live before because weekly lacked 60 and 20 was
-    # False; then the 60 appears True while 20 flips... only real flips count.
-    state = seed_entry(
-        snap(weekly={"10": True, "20": True, "60": False}, monthly={"10": True, "20": True}),
+    # Newly-computable flag on a real flip elsewhere: prev lacked the 60wk
+    # key and was blocked only by the monthly gate; the scan where the gate
+    # completes ALSO sees the 60wk appear (history hit 61 bars). The trigger
+    # must name only the real price flip (the gate), never the new SMA.
+    prev = seed_entry(
+        snap(weekly={"10": True, "20": True}, monthly={"10": True, "20": False}),
         TODAY,
     )
-    assert state["setup_live"] is False
-    # 60wk vanishes from prev/cur comparison? No: here 60 appears computable
-    # AND True next scan -- but it was False before, present in both -> real.
-    # The pure newly-computable case: prev lacks the key entirely.
-    state["weekly_above"] = {"10": True, "20": True}  # 60 not yet computable
-    state["setup_live"] = False
-    state["weekly_all"] = False  # pretend 20 was required-failing... simpler:
-    state["weekly_above"] = {"10": True, "20": False}
-    s2 = snap(weekly={"10": True, "20": False, "60": True}, monthly={"10": True, "20": True})
-    # setup not live (20 below) -> no trigger regardless
-    new, events = entry_step(state, s2, TODAY)
-    assert events == []
-
-    # Direct case: prev had no "60" key, cur has 60:True, everything else
-    # unchanged-true, and prev.setup_live was False only because of... this
-    # can only happen via all_above requiring 10 & 20 which were true; with
-    # 60 absent, all_above was True, so setup was live. The remaining path:
-    # gate had no 60m and becomes computable-True -> gate stays True. Either
-    # way no False->True flip exists on shared keys -> no legs -> no event.
-    prev = seed_entry(snap(weekly={"10": True, "20": True}, above_5w=False), TODAY)
-    assert prev["setup_live"] is False  # blocked by 5wk only
-    cur = snap(weekly={"10": True, "20": True, "60": True}, above_5w=False)
+    assert prev["setup_live"] is False  # blocked by the gate only
+    cur = snap(weekly={"10": True, "20": True, "60": True}, monthly={"10": True, "20": True},
+               daily=BELOW_10)
     new, events = entry_step(prev, cur, TODAY)
-    assert events == []  # still blocked; and 60 appearing produced no leg
+    assert [e["type"] for e in events] == ["TRIGGER"]
+    assert events[0]["legs"] == ["monthly gate completed (20m reclaim)"]
+
+    # Pure newly-computable case: nothing else flips, the appearing 60wk flag
+    # alone flips liveness (60:False was blocking, key present in both maps is
+    # required for a leg -- here prev HAS no 60 key, so seed with a real block
+    # that never resolves): prev blocked by 20wk=False, cur 20wk still False
+    # but 60wk appears True -> still not live, and no leg either way.
+    prev = seed_entry(snap(weekly={"10": True, "20": False}), TODAY)
+    cur = snap(weekly={"10": True, "20": False, "60": True})
+    new, events = entry_step(prev, cur, TODAY)
+    assert events == []
 
 
 # --------------------------------------------------------------------------- #
@@ -198,21 +193,27 @@ def test_armed_demotes_silently_when_setup_breaks():
     # And no BUY on the way down even though daily confirmed.
 
 
-def test_5wk_break_resets_then_reclaim_retriggers():
+def test_5wk_break_does_not_reset_but_10wk_break_does():
     state = seed_entry(snap(weekly=BELOW_10), TODAY)
     state, _ = entry_step(state, snap(daily=ALL_ABOVE), TODAY)  # SIGNALED
-    # 5wk break: silent reset.
+    # 5wk break: setup stays intact (5wk is exit-engine-only).
     state, events = entry_step(
         state, snap(above_5w=False, daily=ALL_ABOVE, weekly_bar="2026-07-24"), TODAY
     )
     assert events == []
-    assert state["phase"] == IDLE
-    # 5wk reclaim with everything else holding: fresh trigger + BUY.
+    assert state["phase"] == SIGNALED
+    # Losing the 10wk is the real reset...
     state, events = entry_step(
-        state, snap(daily=ALL_ABOVE, weekly_bar="2026-07-31"), TODAY
+        state, snap(weekly=BELOW_10, daily=ALL_ABOVE, weekly_bar="2026-07-31"), TODAY
+    )
+    assert events == []
+    assert state["phase"] == IDLE
+    # ...and reclaiming it is a fresh trigger + BUY.
+    state, events = entry_step(
+        state, snap(daily=ALL_ABOVE, weekly_bar="2026-08-07"), TODAY
     )
     assert [e["type"] for e in events] == ["TRIGGER", "BUY"]
-    assert events[0]["legs"] == ["reclaimed 5wk SMA"]
+    assert events[0]["legs"] == ["reclaimed 10wk SMA"]
 
 
 def test_duplicate_trigger_suppressed_for_same_weekly_bar():
@@ -236,12 +237,20 @@ def test_duplicate_trigger_suppressed_for_same_weekly_bar():
     assert [e["type"] for e in events] == ["TRIGGER"]
 
 
-def test_tentative_flag_propagates():
+def test_tentative_only_from_in_progress_weekly_bar():
     state = seed_entry(snap(weekly=BELOW_10), TODAY)
     _, events = entry_step(
         state, snap(daily=ALL_ABOVE, tentative_weekly=True), TODAY
     )
     assert all(e["tentative"] for e in events)
+
+    # The in-progress MONTHLY bar must NOT tag (it's in progress nearly the
+    # whole month, which made every alert "(tentative)" -- user feedback).
+    state = seed_entry(snap(weekly=BELOW_10), TODAY)
+    _, events = entry_step(
+        state, snap(daily=ALL_ABOVE, tentative_monthly=True), TODAY
+    )
+    assert events and not any(e["tentative"] for e in events)
 
 
 # --------------------------------------------------------------------------- #

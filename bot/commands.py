@@ -118,7 +118,7 @@ def register(tree, conn, cfg, run_scan_and_post):
         phase = state["phase"] if state else "(not scanned yet)"
         gate = all_above(snap["monthly_above"])
         weekly_all = all_above(snap["weekly_above"])
-        live = gate and weekly_all and bool(snap["above_5w"])
+        live = gate and weekly_all
         held = db.get_open_position(conn, ticker) is not None
         lines = [
             f"**{ticker}** ${snap['daily_close']:.2f} · phase **{phase}**"
@@ -126,7 +126,8 @@ def register(tree, conn, cfg, run_scan_and_post):
             _fmt_timeframe("Monthly", snap["monthly_above"]),
             _fmt_timeframe("Weekly", snap["weekly_above"], above5=snap["above_5w"]),
             _fmt_timeframe("Daily", snap["daily_above"]),
-            f"Setup live: {_yes(live)} (gate {_yes(gate)} · weekly {_yes(weekly_all)} · 5wk {_yes(bool(snap['above_5w']))})",
+            f"Setup live: {_yes(live)} (gate {_yes(gate)} · weekly {_yes(weekly_all)}) · "
+            f"5wk exit line: {_yes(bool(snap['above_5w']))}",
         ]
         await interaction.followup.send("\n".join(lines))
 

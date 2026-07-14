@@ -8,14 +8,18 @@ Strategy recap
 Entry engine (runs over the whole universe):
   * monthly gate  = monthly close above its 10/20/60-month SMAs
   * weekly setup  = weekly  close above its 10/20/60-week  SMAs
-  * setup is LIVE when: gate AND weekly setup AND weekly close > 5-week SMA
+  * setup is LIVE when: gate AND weekly setup
   * TRIGGER  = setup goes not-live -> live via a real price flip; the alert
-    names whichever leg(s) completed last (10wk/20wk/60wk reclaim, 5wk
-    reclaim, or the monthly gate).
+    names whichever leg(s) completed last (10wk/20wk/60wk reclaim or the
+    monthly gate). The 5-week SMA plays NO role in the entry engine -- it
+    hugs price so closely that its crossings are noise at universe scale
+    (user feedback 2026-07-14); it is only the exit engine's SELL line.
   * BUY      = a triggered ticker's daily close is above its 10/20/60-day SMAs
     (may happen the same scan as the trigger).
-  * The 5-week SMA break silently ends the setup; a later 5wk reclaim (with
-    everything else still holding) is a fresh trigger.
+  * Alerts are tagged tentative only when the WEEKLY bar is in progress
+    (Mon-Thu scans in live mode). The in-progress monthly bar deliberately
+    does not tag: it is "in progress" nearly the whole month, which made
+    every alert tentative and the tag meaningless.
 
 Exit engine (runs ONLY over positions the user actually holds):
   * daily close below the 10-day SMA  -> WARNING, once per dip (re-arms when
@@ -56,14 +60,12 @@ def _flipped(prev_map, cur_map):
     return [k for k in cur_map if k in prev_map and cur_map[k] and not prev_map[k]]
 
 
-def trigger_legs(prev, snap, gate, above5):
+def trigger_legs(prev, snap, gate):
     """Which leg(s) of the setup completed this scan. Empty list means the
     not-live -> live transition wasn't driven by a real price flip."""
     legs = []
     for k in sorted(_flipped(prev.get("weekly_above"), snap["weekly_above"]), key=int):
         legs.append(f"reclaimed {k}wk SMA")
-    if above5 and prev.get("above_5w") is False:
-        legs.append("reclaimed 5wk SMA")
     if gate and prev.get("gate") is False:
         monthly_flips = _flipped(prev.get("monthly_above"), snap["monthly_above"])
         if monthly_flips:
@@ -79,13 +81,12 @@ def seed_entry(snap, today):
     """First sighting of a ticker: record current truth, never alert."""
     gate = all_above(snap["monthly_above"])
     weekly_all = all_above(snap["weekly_above"])
-    above5 = bool(snap.get("above_5w"))
     return {
         "phase": IDLE,
         "gate": gate,
         "weekly_all": weekly_all,
-        "above_5w": above5,
-        "setup_live": gate and weekly_all and above5,
+        "above_5w": bool(snap.get("above_5w")),  # informational (/status)
+        "setup_live": gate and weekly_all,
         "monthly_above": dict(snap["monthly_above"]),
         "weekly_above": dict(snap["weekly_above"]),
         "daily_above": dict(snap["daily_above"]),
@@ -112,13 +113,12 @@ def entry_step(prev, snap, today):
 
     gate = all_above(snap["monthly_above"])
     weekly_all = all_above(snap["weekly_above"])
-    above5 = bool(snap.get("above_5w"))
-    setup_live = gate and weekly_all and above5
+    setup_live = gate and weekly_all
     daily_confirm = all_above(snap["daily_above"])
     weekly_bar = snap["bar_dates"].get("weekly")
-    # A trigger/BUY read weekly+monthly conditions; tag tentative if either
-    # timeframe's last bar is still in progress (CONFIRM_MODE=live).
-    tentative = bool(snap.get("tentative_weekly") or snap.get("tentative_monthly"))
+    # Tag tentative only for an in-progress WEEKLY bar. The monthly bar is
+    # in progress nearly all month; tagging on it made every alert tentative.
+    tentative = bool(snap.get("tentative_weekly"))
 
     events = []
     phase = prev.get("phase", IDLE)
@@ -128,7 +128,7 @@ def entry_step(prev, snap, today):
         phase = IDLE  # silent reset (5wk break, weekly break, or gate break)
     else:
         if phase == IDLE and not prev.get("setup_live", False):
-            legs = trigger_legs(prev, snap, gate, above5)
+            legs = trigger_legs(prev, snap, gate)
             if legs:  # real price flip -- not just an SMA becoming computable
                 phase = TRIGGERED
                 # Live-mode churn guard: the same in-progress weekly bar may
@@ -147,7 +147,7 @@ def entry_step(prev, snap, today):
         "phase": phase,
         "gate": gate,
         "weekly_all": weekly_all,
-        "above_5w": above5,
+        "above_5w": bool(snap.get("above_5w")),  # informational (/status)
         "setup_live": setup_live,
         "monthly_above": dict(snap["monthly_above"]),
         "weekly_above": dict(snap["weekly_above"]),

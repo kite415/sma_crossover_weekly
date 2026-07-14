@@ -12,27 +12,33 @@ Three timeframes, three roles:
 | Timeframe | Role | Condition |
 |---|---|---|
 | **Monthly** | Regime gate | close above the 10/20/60-month SMAs |
-| **Weekly** | Trigger | close above the 10/20/60-week SMAs **and** the 5-week SMA |
+| **Weekly** | Trigger | close above the 10/20/60-week SMAs |
 | **Daily** | Entry confirm | close above the 10/20/60-day SMAs |
 
 A setup is **live** when the monthly gate holds and the weekly close is above
-all four weekly SMAs. The scanner alerts on *transitions*, not conditions:
+the three weekly SMAs. The scanner alerts on *transitions*, not conditions:
 
 ```
             trigger (setup completes)        daily confirm
   IDLE ────────────────────────▶ TRIGGERED ────────────────▶ SIGNALED
     ▲            📢 digest                       ✅ BUY          │
-    └────────────────── weekly close < 5wk SMA (silent) ◀───────┘
+    └──────── weekly close < a 10/20/60wk SMA, or gate breaks ◀─┘
+                              (silent)
 ```
 
 - **Trigger** — the setup goes from not-live to live, whatever leg completed
   last: a 10wk reclaim (pullback resuming), a 60wk reclaim (recovery
-  breakout), the monthly gate completing, or a 5wk reclaim (continuation
-  after a shakeout). The alert names the leg.
+  breakout), or the monthly gate completing. The alert names the leg.
 - **BUY** — a triggered ticker's daily close is above all three daily SMAs
   (often the same evening as the trigger).
-- **Reset** — a weekly close below the 5-week SMA silently ends the setup;
-  a later reclaim (everything else still holding) is a fresh trigger.
+- **Reset** — a weekly close back below any of the 10/20/60-week SMAs (or
+  the gate breaking) silently ends the setup; reclaiming is a fresh trigger.
+- The **5-week SMA** plays no role in entries — it hugs price too closely
+  and its crossings are noise at universe scale. It has exactly one job:
+  the SELL line for positions you hold.
+- **(tentative)** on an alert means the weekly bar that produced it is still
+  in progress (Mon–Thu scans in live mode) and could reverse by Friday's
+  close. Friday-evening alerts are on completed bars and carry no tag.
 
 An SMA with insufficient history is skipped (the 10/20 must exist; the 60 is
 optional so young tickers still qualify). New tickers seed silently — no
