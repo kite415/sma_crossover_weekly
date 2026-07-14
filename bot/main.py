@@ -57,10 +57,18 @@ class ScannerBot(discord.Client):
             channel = self.get_channel(self.cfg.alert_channel_id) or await self.fetch_channel(
                 self.cfg.alert_channel_id
             )
+            def scan_with_own_conn():
+                # sqlite3 connections are single-thread; the scan runs in a
+                # worker thread, so it gets its own connection (WAL mode lets
+                # it coexist with the command handlers on the main thread).
+                conn = db.connect(self.cfg.db_path)
+                try:
+                    return run_scan(conn, self.cfg.confirm_mode)
+                finally:
+                    conn.close()
+
             try:
-                result = await asyncio.to_thread(
-                    run_scan, self.conn, self.cfg.confirm_mode
-                )
+                result = await asyncio.to_thread(scan_with_own_conn)
             except Exception:
                 log.exception("scan failed")
                 await channel.send("💥 Scan failed — check the bot logs.")
