@@ -1,6 +1,7 @@
 """SQLite persistence: ticker state, positions ledger, watchlist, caches."""
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 
@@ -47,6 +48,9 @@ def utcnow():
 
 
 def connect(path):
+    if path != ":memory:":
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)  # sqlite won't create missing dirs
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
