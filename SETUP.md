@@ -80,11 +80,39 @@ binary directly (services don't run `conda activate`; find yours with
   then `sudo systemctl enable --now sma-bot`.
 
 - **Mac (launchd)** — `~/Library/LaunchAgents/com.sma.bot.plist` with
-  `KeepAlive` + `RunAtLoad` pointing at the same command (e.g.
-  `~/miniconda3/envs/sma-bot/bin/python -m bot.main`), then
-  `launchctl load ~/Library/LaunchAgents/com.sma.bot.plist`.
-  Note: the Mac must not sleep for the 17:30 scan to fire
-  (System Settings → Energy → prevent automatic sleeping, or use a Pi).
+  `KeepAlive` + `RunAtLoad`. Wrap the command in `caffeinate` so the Mac
+  can't idle-sleep past the 17:30 scan while the bot is running — launchd
+  handles crashes/reboots, caffeinate handles sleep:
+
+  ```xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+  <plist version="1.0">
+  <dict>
+    <key>Label</key><string>com.sma.bot</string>
+    <key>WorkingDirectory</key><string>/Users/YOU/sma_crossover_weekly</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/bin/caffeinate</string>
+      <string>-is</string>
+      <string>/Users/YOU/miniconda3/envs/sma-bot/bin/python</string>
+      <string>-m</string>
+      <string>bot.main</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+  </dict>
+  </plist>
+  ```
+
+  then `launchctl load ~/Library/LaunchAgents/com.sma.bot.plist`.
+
+  Caffeinate caveats: it does **not** prevent sleep when a MacBook's lid is
+  closed (clamshell sleep wins unless on power with an external display),
+  and `-s` only holds on AC power — on battery the Mac can still sleep. If
+  the machine is a laptop that gets closed or travels, host on a Raspberry
+  Pi instead.
 
 ## 5. Sanity checks
 
