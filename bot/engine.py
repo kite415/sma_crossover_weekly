@@ -16,10 +16,12 @@ Entry engine (runs over the whole universe):
     (user feedback 2026-07-14); it is only the exit engine's SELL line.
   * BUY      = a triggered ticker's daily close is above its 10/20/60-day SMAs
     (may happen the same scan as the trigger).
-  * Alerts are tagged tentative only when the WEEKLY bar is in progress
-    (Mon-Thu scans in live mode). The in-progress monthly bar deliberately
-    does not tag: it is "in progress" nearly the whole month, which made
-    every alert tentative and the tag meaningless.
+  * Alerts are tagged tentative ONLY when the signal is waiting on an
+    unfinished bar -- a condition that passes on the live (in-progress)
+    weekly/monthly bar but would NOT pass on completed bars alone. The tag
+    names what's pending ("pending Fri Jul 17 close", "monthly gate pending
+    July close"). An open bar that the signal doesn't depend on never tags
+    (user feedback 2026-07-15; earlier blanket rules made the tag noise).
 
 Exit engine (runs ONLY over positions the user actually holds):
   * daily close below the 10-day SMA  -> WARNING, once per dip (re-arms when
@@ -32,6 +34,8 @@ skippable (young tickers). A flag that flips only because the SMA *became
 computable* (history finally long enough) must never fire a trigger -- only
 flips on keys present in both the previous and current maps count.
 """
+
+from datetime import date
 
 # Phases of the entry machine. IDLE covers both "no setup" and "setup active
 # but never announced" (cold start) -- a trigger needs a not-live -> live
@@ -58,6 +62,34 @@ def _flipped(prev_map, cur_map):
     if not prev_map or not cur_map:
         return []
     return [k for k in cur_map if k in prev_map and cur_map[k] and not prev_map[k]]
+
+
+def _weekly_label(iso):
+    """'2026-07-17' -> 'Fri Jul 17' (day formatted portably)."""
+    if not iso:
+        return "week"
+    d = date.fromisoformat(iso)
+    return f"{d.strftime('%a %b')} {d.day}"
+
+
+def _month_label(iso):
+    if not iso:
+        return "month"
+    return date.fromisoformat(iso).strftime("%B")
+
+
+def entry_pending(snap, gate, weekly_all):
+    """What the current signal is still waiting on: conditions that pass on
+    the live bar but not on completed bars alone. Empty when fully confirmed
+    (always, in close mode -- confirmed maps equal the live maps there)."""
+    pending = []
+    weekly_conf = all_above(snap.get("weekly_above_confirmed", snap["weekly_above"]))
+    gate_conf = all_above(snap.get("monthly_above_confirmed", snap["monthly_above"]))
+    if weekly_all and not weekly_conf:
+        pending.append(f"pending {_weekly_label(snap['bar_dates'].get('weekly'))} close")
+    if gate and not gate_conf:
+        pending.append(f"monthly gate pending {_month_label(snap['bar_dates'].get('monthly'))} close")
+    return pending
 
 
 def trigger_legs(prev, snap, gate):
@@ -116,9 +148,7 @@ def entry_step(prev, snap, today):
     setup_live = gate and weekly_all
     daily_confirm = all_above(snap["daily_above"])
     weekly_bar = snap["bar_dates"].get("weekly")
-    # Tag tentative only for an in-progress WEEKLY bar. The monthly bar is
-    # in progress nearly all month; tagging on it made every alert tentative.
-    tentative = bool(snap.get("tentative_weekly"))
+    pending = entry_pending(snap, gate, weekly_all)
 
     events = []
     phase = prev.get("phase", IDLE)
@@ -136,12 +166,15 @@ def entry_step(prev, snap, today):
                 # but don't re-announce the same weekly bar twice.
                 if last_trigger_week != weekly_bar:
                     events.append(
-                        {"type": "TRIGGER", "legs": legs, "tentative": tentative}
+                        {"type": "TRIGGER", "legs": legs,
+                         "pending": pending, "tentative": bool(pending)}
                     )
                 last_trigger_week = weekly_bar
         if phase == TRIGGERED and daily_confirm:
             phase = SIGNALED
-            events.append({"type": "BUY", "tentative": tentative})
+            events.append(
+                {"type": "BUY", "pending": pending, "tentative": bool(pending)}
+            )
 
     new = {
         "phase": phase,
@@ -191,11 +224,20 @@ def exit_step(pos, snap, today):
 
     above5 = snap.get("above_5w")
     if above5 is not None:
-        tent = bool(snap.get("tentative_weekly"))
         if new["above_5w"] is None:
             new["above_5w"] = bool(above5)  # silent seed
         elif new["above_5w"] and not above5:
-            events.append({"type": "SELL", "tentative": tent})
+            # Waiting-on rule: tag only if the completed week wasn't already
+            # below the 5wk -- i.e. the SELL rests on the open weekly bar.
+            conf = snap.get("above_5w_confirmed", above5)
+            pending = []
+            if conf is not False:
+                pending.append(
+                    f"pending {_weekly_label(snap['bar_dates'].get('weekly'))} close"
+                )
+            events.append(
+                {"type": "SELL", "pending": pending, "tentative": bool(pending)}
+            )
             new["above_5w"] = False
             new["exit_alerted"] = True  # unmutes future BUY signals
         elif not new["above_5w"] and above5:

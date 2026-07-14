@@ -36,9 +36,13 @@ the three weekly SMAs. The scanner alerts on *transitions*, not conditions:
 - The **5-week SMA** plays no role in entries — it hugs price too closely
   and its crossings are noise at universe scale. It has exactly one job:
   the SELL line for positions you hold.
-- **(tentative)** on an alert means the weekly bar that produced it is still
-  in progress (Mon–Thu scans in live mode) and could reverse by Friday's
-  close. Friday-evening alerts are on completed bars and carry no tag.
+- **(tentative — …)** appears only when the signal is *waiting on* an
+  unfinished bar — a condition that passes on the in-progress weekly or
+  monthly bar but wouldn't pass on completed bars alone. The tag names
+  what's pending: `(tentative — pending Fri Jul 17 close)` for a midweek
+  weekly reclaim, `(tentative — monthly gate pending July close)` when the
+  gate rests on the partial month. An open bar the signal doesn't depend on
+  never tags; in `close` mode nothing is ever tentative.
 
 An SMA with insufficient history is skipped (the 10/20 must exist; the 60 is
 optional so young tickers still qualify). New tickers seed silently — no

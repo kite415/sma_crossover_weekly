@@ -5,6 +5,9 @@ DISCORD_LIMIT = 1990  # a hair under the 2000-char message cap
 
 
 def _tent(event):
+    pending = event.get("pending")
+    if pending:
+        return " *(tentative — " + "; ".join(pending) + ")*"
     return " *(tentative)*" if event.get("tentative") else ""
 
 

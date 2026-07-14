@@ -120,10 +120,25 @@ def build_snapshot(ticker, daily_closes, mode="live", today=None):
     w_flags, w_vals = _sma_flags(weekly, WEEKLY_SMAS)
     m_flags, m_vals = _sma_flags(monthly, MONTHLY_SMAS)
 
-    above_5w = None
-    if len(weekly) >= WEEKLY_EXIT_SMA + 1:
-        sma5 = float(weekly.rolling(WEEKLY_EXIT_SMA).mean().iloc[-1])
-        above_5w = float(weekly.iloc[-1]) > sma5
+    # Confirmed-bars-only variants: what the flags would be if the open
+    # weekly/monthly bar didn't exist. The engine tags an alert tentative
+    # only when a condition passes live but NOT confirmed -- i.e. the signal
+    # is genuinely waiting on the bar to close. In close mode the open bar
+    # was already dropped, so confirmed == live and nothing is ever pending.
+    w_conf_series = weekly.iloc[:-1] if tent_w else weekly
+    m_conf_series = monthly.iloc[:-1] if tent_m else monthly
+    w_flags_conf, _ = _sma_flags(w_conf_series, WEEKLY_SMAS)
+    m_flags_conf, _ = _sma_flags(m_conf_series, MONTHLY_SMAS)
+
+    def _above_5w(series):
+        if len(series) < WEEKLY_EXIT_SMA + 1:
+            return None, None
+        sma5 = float(series.rolling(WEEKLY_EXIT_SMA).mean().iloc[-1])
+        return float(series.iloc[-1]) > sma5, sma5
+
+    above_5w, sma5 = _above_5w(weekly)
+    above_5w_conf, _ = _above_5w(w_conf_series)
+    if sma5 is not None:
         w_vals[str(WEEKLY_EXIT_SMA)] = round(sma5, 4)
 
     smas = {f"d{k}": v for k, v in d_vals.items()}
@@ -138,7 +153,10 @@ def build_snapshot(ticker, daily_closes, mode="live", today=None):
         "daily_above": d_flags,
         "weekly_above": w_flags,
         "monthly_above": m_flags,
+        "weekly_above_confirmed": w_flags_conf,
+        "monthly_above_confirmed": m_flags_conf,
         "above_5w": above_5w,
+        "above_5w_confirmed": above_5w_conf,
         "smas": smas,
         "tentative_weekly": tent_w,
         "tentative_monthly": tent_m,

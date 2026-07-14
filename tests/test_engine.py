@@ -22,26 +22,30 @@ def snap(
     daily=None,
     above_5w=True,
     weekly_bar="2026-07-17",
-    tentative_weekly=False,
-    tentative_monthly=False,
+    weekly_confirmed=None,   # defaults to the live map = nothing pending
+    monthly_confirmed=None,  # defaults to the live map = nothing pending
+    above_5w_confirmed="same",
 ):
     def flags(spec):
         if spec is None:
             spec = {"10": True, "20": True, "60": True}
         return dict(spec)
 
+    live_weekly = flags(weekly)
+    live_monthly = flags(monthly)
     return {
         "ticker": "TEST",
         "daily_close": 100.0,
         "weekly_close": 100.0,
         "monthly_close": 100.0,
         "daily_above": flags(daily),
-        "weekly_above": flags(weekly),
-        "monthly_above": flags(monthly),
+        "weekly_above": live_weekly,
+        "monthly_above": live_monthly,
+        "weekly_above_confirmed": dict(live_weekly) if weekly_confirmed is None else dict(weekly_confirmed),
+        "monthly_above_confirmed": dict(live_monthly) if monthly_confirmed is None else dict(monthly_confirmed),
         "above_5w": above_5w,
+        "above_5w_confirmed": above_5w if above_5w_confirmed == "same" else above_5w_confirmed,
         "smas": {},
-        "tentative_weekly": tentative_weekly,
-        "tentative_monthly": tentative_monthly,
         "bar_dates": {"daily": TODAY, "weekly": weekly_bar, "monthly": "2026-07-31"},
     }
 
@@ -237,20 +241,61 @@ def test_duplicate_trigger_suppressed_for_same_weekly_bar():
     assert [e["type"] for e in events] == ["TRIGGER"]
 
 
-def test_tentative_only_from_in_progress_weekly_bar():
+def test_tentative_only_when_waiting_on_a_bar():
+    # (a) Weekly reclaim exists only on the open weekly bar -> pending Friday.
     state = seed_entry(snap(weekly=BELOW_10), TODAY)
     _, events = entry_step(
-        state, snap(daily=ALL_ABOVE, tentative_weekly=True), TODAY
+        state, snap(daily=ALL_ABOVE, weekly_confirmed=BELOW_10), TODAY
     )
+    assert [e["type"] for e in events] == ["TRIGGER", "BUY"]
+    assert all(e["pending"] == ["pending Fri Jul 17 close"] for e in events)
     assert all(e["tentative"] for e in events)
 
-    # The in-progress MONTHLY bar must NOT tag (it's in progress nearly the
-    # whole month, which made every alert "(tentative)" -- user feedback).
-    state = seed_entry(snap(weekly=BELOW_10), TODAY)
+    # (b) Monthly gate rests on the partial month -> pending named month.
+    gate_off = {"10": True, "20": False, "60": True}
+    state = seed_entry(snap(monthly=gate_off, daily=BELOW_10), TODAY)
     _, events = entry_step(
-        state, snap(daily=ALL_ABOVE, tentative_monthly=True), TODAY
+        state, snap(daily=BELOW_10, monthly_confirmed=gate_off), TODAY
     )
+    assert [e["type"] for e in events] == ["TRIGGER"]
+    assert events[0]["pending"] == ["monthly gate pending July close"]
+
+    # (c) Open bars the signal doesn't depend on never tag: confirmed maps
+    # equal the live maps -> no pending, no tentative.
+    state = seed_entry(snap(weekly=BELOW_10), TODAY)
+    _, events = entry_step(state, snap(daily=ALL_ABOVE), TODAY)
     assert events and not any(e["tentative"] for e in events)
+    assert all(e["pending"] == [] for e in events)
+
+    # (d) Both legs waiting -> both named.
+    state = seed_entry(snap(weekly=BELOW_10, monthly=gate_off, daily=BELOW_10), TODAY)
+    _, events = entry_step(
+        state,
+        snap(daily=BELOW_10, weekly_confirmed=BELOW_10, monthly_confirmed=gate_off),
+        TODAY,
+    )
+    assert events[0]["pending"] == [
+        "pending Fri Jul 17 close",
+        "monthly gate pending July close",
+    ]
+
+
+def test_sell_tentative_only_when_resting_on_open_bar():
+    pos, _ = exit_step(fresh_pos(), snap(daily=ALL_ABOVE), TODAY)
+    # Live weekly close below 5wk but the completed week wasn't -> pending.
+    pos, events = exit_step(
+        pos, snap(daily=ALL_ABOVE, above_5w=False, above_5w_confirmed=True), TODAY
+    )
+    assert [e["type"] for e in events] == ["SELL"]
+    assert events[0]["pending"] == ["pending Fri Jul 17 close"]
+
+    # Completed week already below (e.g. Friday-evening scan) -> firm SELL.
+    pos, _ = exit_step(fresh_pos(), snap(daily=ALL_ABOVE), TODAY)
+    pos, events = exit_step(
+        pos, snap(daily=ALL_ABOVE, above_5w=False, above_5w_confirmed=False), TODAY
+    )
+    assert [e["type"] for e in events] == ["SELL"]
+    assert events[0]["pending"] == [] and not events[0]["tentative"]
 
 
 # --------------------------------------------------------------------------- #
