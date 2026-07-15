@@ -11,7 +11,7 @@ Three timeframes, three roles:
 
 | Timeframe | Role | Condition |
 |---|---|---|
-| **Monthly** | Regime gate | close above the 10/20/60-month SMAs |
+| **Monthly** | Regime gate | close above the 10- and 20-month SMAs (the 60-month is context only — shown on alerts as `60m ✓/✗`, never required) |
 | **Weekly** | Trigger | close above the 10/20/60-week SMAs |
 | **Daily** | Entry confirm | close above the 10/20/60-day SMAs |
 

@@ -8,7 +8,7 @@ from discord import app_commands
 
 from bot import db, universe
 from bot.data import build_snapshot, fetch_closes
-from bot.engine import all_above
+from bot.engine import all_above, gate_ok
 
 
 def _norm(ticker):
@@ -116,7 +116,7 @@ def register(tree, conn, cfg, run_scan_and_post):
             return
         state = db.get_ticker_state(conn, ticker)
         phase = state["phase"] if state else "(not scanned yet)"
-        gate = all_above(snap["monthly_above"])
+        gate = gate_ok(snap["monthly_above"])
         weekly_all = all_above(snap["weekly_above"])
         live = gate and weekly_all
         held = db.get_open_position(conn, ticker) is not None

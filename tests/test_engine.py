@@ -308,6 +308,27 @@ def test_missing_required_monthly_sma_fails_gate():
     assert state["gate"] is False and state["setup_live"] is False
 
 
+def test_60m_never_required_and_never_a_trigger_leg():
+    # Below the 60m SMA: gate passes anyway (60m is context, not a gate).
+    below_60m = {"10": True, "20": True, "60": False}
+    state = seed_entry(snap(monthly=below_60m), TODAY)
+    assert state["gate"] is True and state["setup_live"] is True
+
+    # A 60m reclaim on its own is a non-event (the TGT case, post-change).
+    state2, events = entry_step(state, snap(daily=ALL_ABOVE), TODAY)
+    assert events == []
+
+    # And when the gate DOES complete via the 20m, the 60m still below
+    # doesn't block, and the leg names only the 20m.
+    state = seed_entry(
+        snap(monthly={"10": True, "20": False, "60": False}, daily=BELOW_10), TODAY
+    )
+    assert state["gate"] is False
+    _, events = entry_step(state, snap(monthly=below_60m, daily=BELOW_10), TODAY)
+    assert [e["type"] for e in events] == ["TRIGGER"]
+    assert events[0]["legs"] == ["monthly gate completed (20m reclaim)"]
+
+
 def test_missing_60_is_skippable_everywhere():
     s = snap(
         monthly={"10": True, "20": True},

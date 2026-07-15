@@ -21,9 +21,17 @@ def _sma_line(snap, prefix, keys=("10", "20", "60")):
     return " / ".join(parts)
 
 
+def _m60(snap):
+    """60-month SMA context ('nice to have' -- shown, never required)."""
+    v = (snap.get("monthly_above") or {}).get("60")
+    if v is None:
+        return ""  # young ticker: no 60m SMA to speak of
+    return " · 60m ✓" if v else " · 60m ✗"
+
+
 def digest_line(ticker, snap, event):
     legs = ", ".join(event["legs"])
-    return f"**{ticker}** ${snap['daily_close']:.2f} — {legs}{_tent(event)}"
+    return f"**{ticker}** ${snap['daily_close']:.2f} — {legs}{_m60(snap)}{_tent(event)}"
 
 
 def digest_message(lines):
@@ -34,7 +42,7 @@ def digest_message(lines):
 
 def buy_message(ticker, snap, event):
     return (
-        f"✅ **BUY — {ticker}** ${snap['daily_close']:.2f}{_tent(event)}\n"
+        f"✅ **BUY — {ticker}** ${snap['daily_close']:.2f}{_m60(snap)}{_tent(event)}\n"
         f"Daily close above all daily SMAs ({_sma_line(snap, 'daily')}).\n"
         f"Weekly: {_sma_line(snap, 'weekly')} · 5w ${snap['smas'].get('w5', 0):.2f}"
     )

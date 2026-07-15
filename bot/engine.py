@@ -6,7 +6,9 @@ here is unit-tested with synthetic dicts in tests/test_engine.py.
 Strategy recap
 --------------
 Entry engine (runs over the whole universe):
-  * monthly gate  = monthly close above its 10/20/60-month SMAs
+  * monthly gate  = monthly close above its 10- and 20-month SMAs. The
+    60-month SMA is context only ("nice to have", user 2026-07-15) -- shown
+    on alerts as 60m checkmark/cross but never required and never a trigger leg.
   * weekly setup  = weekly  close above its 10/20/60-week  SMAs
   * setup is LIVE when: gate AND weekly setup
   * TRIGGER  = setup goes not-live -> live via a real price flip; the alert
@@ -45,6 +47,7 @@ TRIGGERED = "TRIGGERED"  # setup announced, waiting for the daily confirm
 SIGNALED = "SIGNALED"    # BUY sent (or consumed); quiet until the setup resets
 
 REQUIRED_KEYS = ("10", "20")  # these SMAs must exist for a timeframe to pass
+GATE_KEYS = ("10", "20")      # the monthly gate: 60m is context, not required
 
 
 def all_above(flags):
@@ -54,6 +57,11 @@ def all_above(flags):
     if any(k not in flags for k in REQUIRED_KEYS):
         return False
     return all(flags.values())
+
+
+def gate_ok(monthly_flags):
+    """Monthly gate: above the 10m and 20m SMAs. The 60m never gates."""
+    return all((monthly_flags or {}).get(k) is True for k in GATE_KEYS)
 
 
 def _flipped(prev_map, cur_map):
@@ -84,7 +92,7 @@ def entry_pending(snap, gate, weekly_all):
     (always, in close mode -- confirmed maps equal the live maps there)."""
     pending = []
     weekly_conf = all_above(snap.get("weekly_above_confirmed", snap["weekly_above"]))
-    gate_conf = all_above(snap.get("monthly_above_confirmed", snap["monthly_above"]))
+    gate_conf = gate_ok(snap.get("monthly_above_confirmed", snap["monthly_above"]))
     if weekly_all and not weekly_conf:
         pending.append(f"pending {_weekly_label(snap['bar_dates'].get('weekly'))} close")
     if gate and not gate_conf:
@@ -99,7 +107,10 @@ def trigger_legs(prev, snap, gate):
     for k in sorted(_flipped(prev.get("weekly_above"), snap["weekly_above"]), key=int):
         legs.append(f"reclaimed {k}wk SMA")
     if gate and prev.get("gate") is False:
-        monthly_flips = _flipped(prev.get("monthly_above"), snap["monthly_above"])
+        monthly_flips = [
+            k for k in _flipped(prev.get("monthly_above"), snap["monthly_above"])
+            if k in GATE_KEYS  # a 60m flip is context, never a trigger leg
+        ]
         if monthly_flips:
             legs.append(
                 "monthly gate completed ("
@@ -111,7 +122,7 @@ def trigger_legs(prev, snap, gate):
 
 def seed_entry(snap, today):
     """First sighting of a ticker: record current truth, never alert."""
-    gate = all_above(snap["monthly_above"])
+    gate = gate_ok(snap["monthly_above"])
     weekly_all = all_above(snap["weekly_above"])
     return {
         "phase": IDLE,
@@ -143,7 +154,7 @@ def entry_step(prev, snap, today):
     if prev is None:
         return seed_entry(snap, today), []
 
-    gate = all_above(snap["monthly_above"])
+    gate = gate_ok(snap["monthly_above"])
     weekly_all = all_above(snap["weekly_above"])
     setup_live = gate and weekly_all
     daily_confirm = all_above(snap["daily_above"])
