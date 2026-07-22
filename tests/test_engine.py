@@ -174,6 +174,15 @@ def test_buy_fires_later_when_daily_confirms():
     state, events = entry_step(state, snap(daily=ALL_ABOVE), TODAY)
     assert [e["type"] for e in events] == ["BUY"]
     assert state["phase"] == SIGNALED
+    # The late BUY still names what completed the setup days earlier.
+    assert events[0]["legs"] == ["reclaimed 10wk SMA"]
+
+
+def test_same_scan_buy_carries_trigger_legs():
+    state = seed_entry(snap(weekly=BELOW_10), TODAY)
+    _, events = entry_step(state, snap(daily=ALL_ABOVE), TODAY)
+    assert [e["type"] for e in events] == ["TRIGGER", "BUY"]
+    assert events[1]["legs"] == events[0]["legs"] == ["reclaimed 10wk SMA"]
 
 
 def test_no_second_buy_while_signaled():

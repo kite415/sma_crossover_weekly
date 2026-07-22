@@ -136,6 +136,7 @@ def seed_entry(snap, today):
         "daily_close": snap.get("daily_close"),
         "smas": dict(snap.get("smas") or {}),
         "last_trigger_week": None,
+        "last_trigger_legs": [],
         "weekly_bar": snap["bar_dates"].get("weekly"),
         "updated": today,
     }
@@ -164,14 +165,18 @@ def entry_step(prev, snap, today):
     events = []
     phase = prev.get("phase", IDLE)
     last_trigger_week = prev.get("last_trigger_week")
+    # Legs persist so a BUY that confirms days after its trigger still names
+    # what completed the setup.
+    last_trigger_legs = prev.get("last_trigger_legs") or []
 
     if not setup_live:
-        phase = IDLE  # silent reset (5wk break, weekly break, or gate break)
+        phase = IDLE  # silent reset (weekly break or gate break)
     else:
         if phase == IDLE and not prev.get("setup_live", False):
             legs = trigger_legs(prev, snap, gate)
             if legs:  # real price flip -- not just an SMA becoming computable
                 phase = TRIGGERED
+                last_trigger_legs = legs
                 # Live-mode churn guard: the same in-progress weekly bar may
                 # flip live->not-live->live across daily scans; transition,
                 # but don't re-announce the same weekly bar twice.
@@ -184,7 +189,8 @@ def entry_step(prev, snap, today):
         if phase == TRIGGERED and daily_confirm:
             phase = SIGNALED
             events.append(
-                {"type": "BUY", "pending": pending, "tentative": bool(pending)}
+                {"type": "BUY", "legs": last_trigger_legs,
+                 "pending": pending, "tentative": bool(pending)}
             )
 
     new = {
@@ -199,6 +205,7 @@ def entry_step(prev, snap, today):
         "daily_close": snap.get("daily_close"),
         "smas": dict(snap.get("smas") or {}),
         "last_trigger_week": last_trigger_week,
+        "last_trigger_legs": last_trigger_legs,
         "weekly_bar": weekly_bar,
         "updated": today,
     }

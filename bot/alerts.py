@@ -11,41 +11,49 @@ def _tent(event):
     return " *(tentative)*" if event.get("tentative") else ""
 
 
-def _sma_line(snap, prefix, keys=("10", "20", "60")):
-    vals = snap.get("smas") or {}
-    parts = [
-        f"{k}{prefix[0]} ${vals[f'{prefix[0]}{k}']:.2f}"
-        for k in keys
-        if f"{prefix[0]}{k}" in vals
-    ]
-    return " / ".join(parts)
+def buy_waits(snap, event):
+    """Short tokens naming everything this BUY is still waiting on. Empty =
+    firm. The 60m ('nice to have') counts as a wait only when it exists and
+    is below -- a young ticker with no 60m SMA has nothing to wait for."""
+    waits = []
+    for p in event.get("pending") or []:
+        if p.startswith("monthly gate"):
+            waits.append("month close (gate)")
+        elif p.startswith("pending ") and p.endswith(" close"):
+            waits.append(p[len("pending "):])  # "Fri Jul 24 close"
+    if (snap.get("monthly_above") or {}).get("60") is False:
+        waits.append("60m ✗")
+    return waits
 
 
-def _m60(snap):
-    """60-month SMA context ('nice to have' -- shown, never required)."""
-    v = (snap.get("monthly_above") or {}).get("60")
-    if v is None:
-        return ""  # young ticker: no 60m SMA to speak of
-    return " · 60m ✓" if v else " · 60m ✗"
+def _line(ticker, snap, legs, waits=None):
+    parts = [", ".join(legs) if legs else "setup live"]
+    if waits:
+        parts.append(" · ".join(waits))
+    return f"**{ticker}** ${snap['daily_close']:.2f} — " + " · ".join(parts)
 
 
-def digest_line(ticker, snap, event):
-    legs = ", ".join(event["legs"])
-    return f"**{ticker}** ${snap['daily_close']:.2f} — {legs}{_m60(snap)}{_tent(event)}"
-
-
-def digest_message(lines):
-    return "📢 **New setups** — monthly gate + weekly 10/20/60 complete:\n" + "\n".join(
-        f"• {line}" for line in lines
-    )
-
-
-def buy_message(ticker, snap, event):
-    return (
-        f"✅ **BUY — {ticker}** ${snap['daily_close']:.2f}{_m60(snap)}{_tent(event)}\n"
-        f"Daily close above all daily SMAs ({_sma_line(snap, 'daily')}).\n"
-        f"Weekly: {_sma_line(snap, 'weekly')} · 5w ${snap['smas'].get('w5', 0):.2f}"
-    )
+def scan_report(firm, waiting, watching):
+    """One message per scan, three mutually exclusive sections (each entry is
+    (ticker, snap, legs[, waits])). Empty sections are omitted; all empty ->
+    None (nothing to post)."""
+    sections = []
+    if firm:
+        sections.append(
+            "✅ **BUY — fully confirmed (incl. 60m):**\n"
+            + "\n".join(f"• {_line(t, s, legs)}" for t, s, legs in firm)
+        )
+    if waiting:
+        sections.append(
+            "🕒 **BUY — waiting on:**\n"
+            + "\n".join(f"• {_line(t, s, legs, waits)}" for t, s, legs, waits in waiting)
+        )
+    if watching:
+        sections.append(
+            "👀 **Setup complete — watching daily confirm:**\n"
+            + "\n".join(f"• {_line(t, s, legs)}" for t, s, legs in watching)
+        )
+    return "\n\n".join(sections) if sections else None
 
 
 def warning_message(ticker, snap, pos):

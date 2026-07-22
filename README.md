@@ -55,10 +55,21 @@ persistently strong stock therefore stays quiet until its first real
 Log what you actually buy with `/buy` — that ticker joins the **exit
 engine**:
 
+Each scan posts **one report** with three mutually exclusive sections, ranked
+by confirmation strength (a ticker appears in exactly one; empty sections are
+omitted):
+
+| Section | Meaning |
+|---|---|
+| ✅ **BUY — fully confirmed (incl. 60m)** | daily confirm done, nothing pending, and above the 60-month SMA — the strongest signal |
+| 🕒 **BUY — waiting on:** | daily confirm done, but each line names what's still open: `60m ✗`, `Fri Jul 24 close` (weekly bar), `month close (gate)` |
+| 👀 **Setup complete — watching daily confirm** | triggered on the weekly/monthly, daily SMAs not yet all above; moves to a BUY section the day it confirms |
+
+BUY entries are **muted while you hold the ticker** (unmute after a SELL
+alert or `/sell`). Position alerts stay individual messages:
+
 | Alert | Condition | Who gets it |
 |---|---|---|
-| 📢 Setup digest | new triggers, one message per scan | everything scanned |
-| ✅ BUY | daily confirm after a trigger | everything scanned — **muted while you hold the ticker** (unmutes after a SELL alert or `/sell`) |
 | ⚠️ WARNING | daily close below the 10-day SMA, once per dip | held positions only |
 | 🔻 SELL | weekly close below the 5-week SMA | held positions only |
 

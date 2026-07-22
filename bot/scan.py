@@ -37,7 +37,8 @@ def run_scan(conn, mode="live", tickers=None):
     open_positions = {p["ticker"]: p for p in db.get_open_positions(conn)}
 
     snapshots = {}
-    digest_lines = []
+    firm_buys, waiting_buys, watch_entries = [], [], []
+    triggered_this_scan = {}  # ticker -> (snap, legs) awaiting same-scan BUY
     seeded = triggers = buys = 0
 
     # ---- entry engine over the whole universe ----
@@ -64,19 +65,28 @@ def run_scan(conn, mode="live", tickers=None):
         for event in events:
             if event["type"] == "TRIGGER":
                 triggers += 1
-                digest_lines.append(alerts.digest_line(ticker, snap, event))
+                triggered_this_scan[ticker] = (snap, event["legs"])
             elif event["type"] == "BUY":
                 buys += 1
+                # A same-scan trigger+BUY shows only in a BUY section.
+                triggered_this_scan.pop(ticker, None)
                 pos = open_positions.get(ticker)
                 if pos and not pos["exit_alerted"]:
                     # Held and no exit alert yet: mute per user rule.
                     result.muted_buys.append(ticker)
                     result.log.append(f"BUY for {ticker} muted (held)")
+                    continue
+                waits = alerts.buy_waits(snap, event)
+                legs = event.get("legs") or []
+                if waits:
+                    waiting_buys.append((ticker, snap, legs, waits))
                 else:
-                    result.messages.append(alerts.buy_message(ticker, snap, event))
+                    firm_buys.append((ticker, snap, legs))
 
-    if digest_lines:
-        result.digest = alerts.digest_message(digest_lines)
+    watch_entries = [
+        (t, snap, legs) for t, (snap, legs) in triggered_this_scan.items()
+    ]
+    result.digest = alerts.scan_report(firm_buys, waiting_buys, watch_entries)
 
     # ---- exit engine over held positions only ----
     for ticker, pos in open_positions.items():
