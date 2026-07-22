@@ -37,7 +37,12 @@ CREATE TABLE IF NOT EXISTS watchlist (
 );
 CREATE TABLE IF NOT EXISTS universe_cache (
     source     TEXT PRIMARY KEY,    -- 'sp500' | 'sp400'
-    tickers    TEXT NOT NULL,       -- JSON list
+    tickers    TEXT NOT NULL,       -- JSON {symbol: sector} (legacy: list)
+    fetched_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ticker_sectors (
+    ticker     TEXT PRIMARY KEY,    -- non-index tickers (watchlist/positions)
+    sector     TEXT,
     fetched_at TEXT NOT NULL
 );
 """
@@ -188,11 +193,17 @@ def watchlist_all(conn):
 # --------------------------------------------------------------------------- #
 
 def cache_universe(conn, source, tickers):
+    """tickers: {symbol: sector} (a plain iterable also works, stored as list)."""
+    payload = (
+        json.dumps(tickers, sort_keys=True)
+        if isinstance(tickers, dict)
+        else json.dumps(sorted(tickers))
+    )
     conn.execute(
         "INSERT INTO universe_cache (source, tickers, fetched_at) VALUES (?, ?, ?) "
         "ON CONFLICT(source) DO UPDATE SET tickers = excluded.tickers, "
         "fetched_at = excluded.fetched_at",
-        (source, json.dumps(sorted(tickers)), utcnow()),
+        (source, payload, utcnow()),
     )
     conn.commit()
 
@@ -204,3 +215,25 @@ def cached_universe(conn, source):
     if row is None:
         return None, None
     return json.loads(row["tickers"]), row["fetched_at"]
+
+
+def get_ticker_sectors(conn, tickers):
+    if not tickers:
+        return {}
+    qs = ",".join("?" * len(tickers))
+    return {
+        row["ticker"]: row["sector"]
+        for row in conn.execute(
+            f"SELECT ticker, sector FROM ticker_sectors WHERE ticker IN ({qs})",
+            list(tickers),
+        )
+    }
+
+def put_ticker_sector(conn, ticker, sector):
+    conn.execute(
+        "INSERT INTO ticker_sectors (ticker, sector, fetched_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(ticker) DO UPDATE SET sector = excluded.sector, "
+        "fetched_at = excluded.fetched_at",
+        (ticker, sector, utcnow()),
+    )
+    conn.commit()

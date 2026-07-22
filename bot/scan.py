@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 
-from bot import alerts, db, universe
+from bot import alerts, db, sectors, universe
 from bot.data import build_snapshot, fetch_closes, today_et
 from bot.engine import entry_step, exit_step
 
@@ -84,7 +84,18 @@ def run_scan(conn, mode="live", tickers=None):
     watch_entries = [
         (t, snap, legs) for t, (snap, legs) in triggered_this_scan.items()
     ]
-    result.digest = alerts.scan_report(buy_entries, watch_entries)
+    cats = {}
+    if buy_entries or watch_entries:
+        try:
+            smap = universe.sector_map(conn)
+        except Exception as exc:
+            smap = {}
+            result.log.append(f"WARN: sector lookup failed ({exc}); flat report")
+        cats = {
+            e[0]: sectors.category(e[0], smap.get(e[0]))
+            for e in buy_entries + watch_entries
+        }
+    result.digest = alerts.scan_report(buy_entries, watch_entries, cats)
 
     # ---- exit engine over held positions only ----
     for ticker, pos in open_positions.items():

@@ -1,6 +1,8 @@
 """Alert message formatting. Pure strings -- no Discord objects here, so the
 scan and its dry-run mode never need discord.py installed."""
 
+from bot import sectors
+
 DISCORD_LIMIT = 1990  # a hair under the 2000-char message cap
 
 
@@ -40,24 +42,36 @@ def _line(ticker, snap, legs, waits=None, with_m60=False):
     return f"**{ticker}** ${snap['daily_close']:.2f} — " + " · ".join(parts)
 
 
-def scan_report(buys, watching):
-    """One message per scan, two mutually exclusive sections. buys entries
-    are (ticker, snap, legs, waits); watching entries (ticker, snap, legs).
-    Empty sections are omitted; both empty -> None (nothing to post)."""
+def _grouped_lines(entries, line_fn, cats):
+    """Render entries grouped under emoji sector headers, Tech first. If no
+    entry has a known category, skip the headers (flat list)."""
+    groups = {}
+    for entry in entries:
+        cat = (cats or {}).get(entry[0], "Unknown")
+        groups.setdefault(cat, []).append(f"• {line_fn(entry)}")
+    if set(groups) == {"Unknown"}:
+        return [line for lines in groups.values() for line in lines]
+    out = []
+    for cat in sorted(groups, key=sectors.sort_key):
+        out.append(f"{sectors.emoji(cat)} {cat}")
+        out.extend(groups[cat])
+    return out
+
+
+def scan_report(buys, watching, cats=None):
+    """One message per scan, two mutually exclusive sections, entries grouped
+    by sector category (Tech first). buys entries are (ticker, snap, legs,
+    waits); watching entries (ticker, snap, legs); cats maps ticker ->
+    category. Empty sections are omitted; both empty -> None."""
     sections = []
     if buys:
-        sections.append(
-            "✅ **BUY:**\n"
-            + "\n".join(
-                f"• {_line(t, s, legs, waits, with_m60=True)}"
-                for t, s, legs, waits in buys
-            )
+        lines = _grouped_lines(
+            buys, lambda e: _line(e[0], e[1], e[2], e[3], with_m60=True), cats
         )
+        sections.append("✅ **BUY:**\n" + "\n".join(lines))
     if watching:
-        sections.append(
-            "👀 **Setup complete — watching daily confirm:**\n"
-            + "\n".join(f"• {_line(t, s, legs)}" for t, s, legs in watching)
-        )
+        lines = _grouped_lines(watching, lambda e: _line(e[0], e[1], e[2]), cats)
+        sections.append("👀 **Setup complete — watching daily confirm:**\n" + "\n".join(lines))
     return "\n\n".join(sections) if sections else None
 
 

@@ -63,6 +63,14 @@ appears in exactly one; empty sections are omitted):
 | ✅ **BUY** | all three timeframes aligned. Each line carries its context inline: the trigger leg, `60m ✓/✗` (the nice-to-have), and any pending bar (`pending Fri Jul 24 close`, `pending month close (gate)`). No pending tag = firm signal. |
 | 👀 **Setup complete — watching daily confirm** | triggered on the weekly/monthly, daily SMAs not yet all above; moves to BUY the day it confirms |
 
+Within each section, tickers are grouped under emoji sector headers with
+**💻 Tech always first** (a broad bucket: GICS Information Technology +
+Communication Services + hand-picked extras like AMZN/TSLA — edit
+`TECH_EXTRAS` in `bot/sectors.py`), then other GICS sectors alphabetically.
+Sector data rides along with the weekly Wikipedia constituent scrape;
+watchlist tickers outside the indices resolve via yfinance once and are
+cached.
+
 BUY entries are **muted while you hold the ticker** (unmute after a SELL
 alert or `/sell`). Position alerts stay individual messages:
 

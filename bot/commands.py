@@ -6,7 +6,7 @@ from typing import Optional
 import discord
 from discord import app_commands
 
-from bot import db, universe
+from bot import db, sectors, universe
 from bot.data import build_snapshot, fetch_closes
 from bot.engine import all_above, gate_ok
 
@@ -120,9 +120,13 @@ def register(tree, conn, cfg, run_scan_and_post):
         weekly_all = all_above(snap["weekly_above"])
         live = gate and weekly_all
         held = db.get_open_position(conn, ticker) is not None
+        # DB-only sector lookup (fetch_missing=False keeps it off-network and
+        # safe on the event loop); populated for extras by the first scan.
+        cat = sectors.category(ticker, universe.sector_of(conn, ticker, fetch_missing=False))
+        cat_txt = f" · {sectors.emoji(cat)} {cat}" if cat != "Unknown" else ""
         lines = [
             f"**{ticker}** ${snap['daily_close']:.2f} · phase **{phase}**"
-            + (" · 📒 held" if held else ""),
+            + cat_txt + (" · 📒 held" if held else ""),
             _fmt_timeframe("Monthly", snap["monthly_above"]),
             _fmt_timeframe("Weekly", snap["weekly_above"], above5=snap["above_5w"]),
             _fmt_timeframe("Daily", snap["daily_above"]),
