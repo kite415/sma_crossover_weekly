@@ -12,41 +12,46 @@ def _tent(event):
 
 
 def buy_waits(snap, event):
-    """Short tokens naming everything this BUY is still waiting on. Empty =
-    firm. The 60m ('nice to have') counts as a wait only when it exists and
-    is below -- a young ticker with no 60m SMA has nothing to wait for."""
+    """Inline tokens for what a BUY still awaits (unfinished bars only --
+    the 60m is context, not a wait). Empty = firm signal."""
     waits = []
     for p in event.get("pending") or []:
         if p.startswith("monthly gate"):
-            waits.append("month close (gate)")
-        elif p.startswith("pending ") and p.endswith(" close"):
-            waits.append(p[len("pending "):])  # "Fri Jul 24 close"
-    if (snap.get("monthly_above") or {}).get("60") is False:
-        waits.append("60m ✗")
+            waits.append("pending month close (gate)")
+        elif p.startswith("pending "):
+            waits.append(p)  # "pending Fri Jul 24 close"
     return waits
 
 
-def _line(ticker, snap, legs, waits=None):
+def _m60(snap):
+    """60-month SMA context ('nice to have' -- shown, never required)."""
+    v = (snap.get("monthly_above") or {}).get("60")
+    if v is None:
+        return None  # young ticker: no 60m SMA to speak of
+    return "60m ✓" if v else "60m ✗"
+
+
+def _line(ticker, snap, legs, waits=None, with_m60=False):
     parts = [", ".join(legs) if legs else "setup live"]
+    if with_m60 and _m60(snap):
+        parts.append(_m60(snap))
     if waits:
-        parts.append(" · ".join(waits))
+        parts.extend(waits)
     return f"**{ticker}** ${snap['daily_close']:.2f} — " + " · ".join(parts)
 
 
-def scan_report(firm, waiting, watching):
-    """One message per scan, three mutually exclusive sections (each entry is
-    (ticker, snap, legs[, waits])). Empty sections are omitted; all empty ->
-    None (nothing to post)."""
+def scan_report(buys, watching):
+    """One message per scan, two mutually exclusive sections. buys entries
+    are (ticker, snap, legs, waits); watching entries (ticker, snap, legs).
+    Empty sections are omitted; both empty -> None (nothing to post)."""
     sections = []
-    if firm:
+    if buys:
         sections.append(
-            "✅ **BUY — fully confirmed (incl. 60m):**\n"
-            + "\n".join(f"• {_line(t, s, legs)}" for t, s, legs in firm)
-        )
-    if waiting:
-        sections.append(
-            "🕒 **BUY — waiting on:**\n"
-            + "\n".join(f"• {_line(t, s, legs, waits)}" for t, s, legs, waits in waiting)
+            "✅ **BUY:**\n"
+            + "\n".join(
+                f"• {_line(t, s, legs, waits, with_m60=True)}"
+                for t, s, legs, waits in buys
+            )
         )
     if watching:
         sections.append(

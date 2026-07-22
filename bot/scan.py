@@ -37,7 +37,7 @@ def run_scan(conn, mode="live", tickers=None):
     open_positions = {p["ticker"]: p for p in db.get_open_positions(conn)}
 
     snapshots = {}
-    firm_buys, waiting_buys, watch_entries = [], [], []
+    buy_entries = []
     triggered_this_scan = {}  # ticker -> (snap, legs) awaiting same-scan BUY
     seeded = triggers = buys = 0
 
@@ -76,17 +76,15 @@ def run_scan(conn, mode="live", tickers=None):
                     result.muted_buys.append(ticker)
                     result.log.append(f"BUY for {ticker} muted (held)")
                     continue
-                waits = alerts.buy_waits(snap, event)
-                legs = event.get("legs") or []
-                if waits:
-                    waiting_buys.append((ticker, snap, legs, waits))
-                else:
-                    firm_buys.append((ticker, snap, legs))
+                buy_entries.append(
+                    (ticker, snap, event.get("legs") or [],
+                     alerts.buy_waits(snap, event))
+                )
 
     watch_entries = [
         (t, snap, legs) for t, (snap, legs) in triggered_this_scan.items()
     ]
-    result.digest = alerts.scan_report(firm_buys, waiting_buys, watch_entries)
+    result.digest = alerts.scan_report(buy_entries, watch_entries)
 
     # ---- exit engine over held positions only ----
     for ticker, pos in open_positions.items():
