@@ -25,6 +25,9 @@ class Config:
         if self.confirm_mode not in ("live", "close"):
             raise SystemExit("ERROR: CONFIRM_MODE must be 'live' or 'close'")
         self.db_path = os.environ.get("DB_PATH", "data/bot.db")
+        # Below-60m signals are deferred until price is within this percent
+        # of the 60-month SMA (see README "proximity rule").
+        self.m60_prox_pct = float(os.environ.get("M60_PROXIMITY_PCT", "10"))
         # Daily scan time (America/New_York). 17:30 ET is safely after the
         # 4pm close and after Yahoo has finalized the daily bar.
         self.scan_hour = int(os.environ.get("SCAN_HOUR", "17"))

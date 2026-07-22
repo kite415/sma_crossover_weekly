@@ -64,6 +64,22 @@ def gate_ok(monthly_flags):
     return all((monthly_flags or {}).get(k) is True for k in GATE_KEYS)
 
 
+def m60_ok(snap, pct):
+    """Proximity rule for the 60-month line (user 2026-07-22, HRL example):
+    a below-60m signal is only worth announcing when price is within `pct`
+    percent of the line. True when there is no 60m SMA (young ticker), price
+    is above it, or the gap is inside the threshold."""
+    m60 = (snap.get("smas") or {}).get("m60")
+    if m60 is None:
+        return True
+    if (snap.get("monthly_above") or {}).get("60") is True:
+        return True
+    px = snap.get("daily_close")
+    if not px:
+        return True
+    return (m60 - px) / px * 100.0 <= pct
+
+
 def _flipped(prev_map, cur_map):
     """Keys that went False -> True, counting only keys present in BOTH maps
     (a newly computable SMA appearing in cur_map is not a price event)."""
@@ -137,20 +153,24 @@ def seed_entry(snap, today):
         "smas": dict(snap.get("smas") or {}),
         "last_trigger_week": None,
         "last_trigger_legs": [],
+        "deferred": False,
         "weekly_bar": snap["bar_dates"].get("weekly"),
         "updated": today,
     }
 
 
-def entry_step(prev, snap, today):
+def entry_step(prev, snap, today, m60_prox_pct=10.0):
     """
     Advance one ticker's entry machine by one scan.
 
     prev: the stored entry state (dict from seed_entry/entry_step) or None.
     snap: snapshot dict from data.build_snapshot().
+    m60_prox_pct: below-60m signals are deferred (state advances silently,
+    no events) until price is within this percent of the 60m line; the
+    stored announcement fires the scan the gap closes.
     Returns (new_state, events) where events is a list of dicts:
-      {"type": "TRIGGER", "legs": [...], "tentative": bool}
-      {"type": "BUY", "tentative": bool}
+      {"type": "TRIGGER", "legs": [...], "pending": [...], "tentative": bool}
+      {"type": "BUY", "legs": [...], "pending": [...], "tentative": bool}
     """
     if prev is None:
         return seed_entry(snap, today), []
@@ -168,30 +188,53 @@ def entry_step(prev, snap, today):
     # Legs persist so a BUY that confirms days after its trigger still names
     # what completed the setup.
     last_trigger_legs = prev.get("last_trigger_legs") or []
+    deferred = bool(prev.get("deferred"))
+    prox_ok = m60_ok(snap, m60_prox_pct)
 
     if not setup_live:
         phase = IDLE  # silent reset (weekly break or gate break)
+        deferred = False
     else:
         if phase == IDLE and not prev.get("setup_live", False):
             legs = trigger_legs(prev, snap, gate)
             if legs:  # real price flip -- not just an SMA becoming computable
                 phase = TRIGGERED
                 last_trigger_legs = legs
-                # Live-mode churn guard: the same in-progress weekly bar may
-                # flip live->not-live->live across daily scans; transition,
-                # but don't re-announce the same weekly bar twice.
-                if last_trigger_week != weekly_bar:
-                    events.append(
-                        {"type": "TRIGGER", "legs": legs,
-                         "pending": pending, "tentative": bool(pending)}
-                    )
-                last_trigger_week = weekly_bar
+                if prox_ok:
+                    # Live-mode churn guard: the same in-progress weekly bar
+                    # may flip live->not-live->live across daily scans;
+                    # transition, but don't re-announce the same bar twice.
+                    if last_trigger_week != weekly_bar:
+                        events.append(
+                            {"type": "TRIGGER", "legs": legs,
+                             "pending": pending, "tentative": bool(pending)}
+                        )
+                    last_trigger_week = weekly_bar
+                else:
+                    deferred = True  # too far below the 60m: hold the news
+        elif deferred and prox_ok:
+            # The gap closed inside the threshold: fire the held announcement
+            # now, with the original trigger legs.
+            deferred = False
+            last_trigger_week = weekly_bar
+            if phase == SIGNALED:
+                events.append(
+                    {"type": "BUY", "legs": last_trigger_legs,
+                     "pending": pending, "tentative": bool(pending)}
+                )
+            else:  # TRIGGERED
+                events.append(
+                    {"type": "TRIGGER", "legs": last_trigger_legs,
+                     "pending": pending, "tentative": bool(pending)}
+                )
         if phase == TRIGGERED and daily_confirm:
             phase = SIGNALED
-            events.append(
-                {"type": "BUY", "legs": last_trigger_legs,
-                 "pending": pending, "tentative": bool(pending)}
-            )
+            if not deferred:
+                events.append(
+                    {"type": "BUY", "legs": last_trigger_legs,
+                     "pending": pending, "tentative": bool(pending)}
+                )
+            # else: silent advance; the BUY fires when the gap closes
 
     new = {
         "phase": phase,
@@ -206,6 +249,7 @@ def entry_step(prev, snap, today):
         "smas": dict(snap.get("smas") or {}),
         "last_trigger_week": last_trigger_week,
         "last_trigger_legs": last_trigger_legs,
+        "deferred": deferred,
         "weekly_bar": weekly_bar,
         "updated": today,
     }

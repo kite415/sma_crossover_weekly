@@ -63,7 +63,10 @@ class ScannerBot(discord.Client):
                 # it coexist with the command handlers on the main thread).
                 conn = db.connect(self.cfg.db_path)
                 try:
-                    return run_scan(conn, self.cfg.confirm_mode)
+                    return run_scan(
+                        conn, self.cfg.confirm_mode,
+                        m60_prox_pct=self.cfg.m60_prox_pct,
+                    )
                 finally:
                     conn.close()
 

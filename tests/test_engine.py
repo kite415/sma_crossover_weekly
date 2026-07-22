@@ -25,6 +25,8 @@ def snap(
     weekly_confirmed=None,   # defaults to the live map = nothing pending
     monthly_confirmed=None,  # defaults to the live map = nothing pending
     above_5w_confirmed="same",
+    smas=None,
+    daily_close=100.0,
 ):
     def flags(spec):
         if spec is None:
@@ -35,7 +37,7 @@ def snap(
     live_monthly = flags(monthly)
     return {
         "ticker": "TEST",
-        "daily_close": 100.0,
+        "daily_close": daily_close,
         "weekly_close": 100.0,
         "monthly_close": 100.0,
         "daily_above": flags(daily),
@@ -45,7 +47,7 @@ def snap(
         "monthly_above_confirmed": dict(live_monthly) if monthly_confirmed is None else dict(monthly_confirmed),
         "above_5w": above_5w,
         "above_5w_confirmed": above_5w if above_5w_confirmed == "same" else above_5w_confirmed,
-        "smas": {},
+        "smas": dict(smas or {}),
         "bar_dates": {"daily": TODAY, "weekly": weekly_bar, "monthly": "2026-07-31"},
     }
 
@@ -346,6 +348,81 @@ def test_missing_60_is_skippable_everywhere():
     )
     state = seed_entry(s, TODAY)
     assert state["gate"] and state["weekly_all"] and state["setup_live"]
+
+
+# --------------------------------------------------------------------------- #
+# 60m proximity deferral (HRL rule)
+# --------------------------------------------------------------------------- #
+
+# Price $100, 60m SMA $127 -> 27% below (HRL-like, outside the 10% default).
+FAR = {"m60": 127.0}
+# Price $100, 60m SMA $106 -> 6% below (inside the 10% default).
+NEAR = {"m60": 106.0}
+BELOW_60M = {"10": True, "20": True, "60": False}
+
+
+def test_far_below_60m_trigger_is_deferred_silently():
+    state = seed_entry(snap(weekly=BELOW_10, monthly=BELOW_60M, smas=FAR), TODAY)
+    state, events = entry_step(state, snap(monthly=BELOW_60M, smas=FAR, daily=BELOW_10), TODAY)
+    assert events == []
+    assert state["phase"] == TRIGGERED and state["deferred"] is True
+    assert state["last_trigger_week"] is None  # never announced
+    assert state["last_trigger_legs"] == ["reclaimed 10wk SMA"]
+
+
+def test_deferred_advances_to_signaled_silently_then_buy_fires_when_gap_closes():
+    state = seed_entry(snap(weekly=BELOW_10, monthly=BELOW_60M, smas=FAR), TODAY)
+    state, _ = entry_step(state, snap(monthly=BELOW_60M, smas=FAR, daily=BELOW_10), TODAY)
+    # Daily confirms while still far below: silent advance to SIGNALED.
+    state, events = entry_step(state, snap(monthly=BELOW_60M, smas=FAR, daily=ALL_ABOVE), TODAY)
+    assert events == []
+    assert state["phase"] == SIGNALED and state["deferred"] is True
+    # Gap closes inside the threshold: the held BUY fires with original legs.
+    state, events = entry_step(state, snap(monthly=BELOW_60M, smas=NEAR, daily=ALL_ABOVE), TODAY)
+    assert [e["type"] for e in events] == ["BUY"]
+    assert events[0]["legs"] == ["reclaimed 10wk SMA"]
+    assert state["deferred"] is False
+
+
+def test_deferred_trigger_fires_into_watching_when_gap_closes():
+    state = seed_entry(snap(weekly=BELOW_10, monthly=BELOW_60M, smas=FAR), TODAY)
+    state, _ = entry_step(state, snap(monthly=BELOW_60M, smas=FAR, daily=BELOW_10), TODAY)
+    state, events = entry_step(state, snap(monthly=BELOW_60M, smas=NEAR, daily=BELOW_10), TODAY)
+    assert [e["type"] for e in events] == ["TRIGGER"]
+    assert events[0]["legs"] == ["reclaimed 10wk SMA"]
+    assert state["phase"] == TRIGGERED and state["deferred"] is False
+
+
+def test_crossing_the_60m_also_releases_the_deferral():
+    state = seed_entry(snap(weekly=BELOW_10, monthly=BELOW_60M, smas=FAR), TODAY)
+    state, _ = entry_step(state, snap(monthly=BELOW_60M, smas=FAR, daily=BELOW_10), TODAY)
+    state, events = entry_step(state, snap(smas=FAR, daily=BELOW_10), TODAY)  # 60m now True
+    assert [e["type"] for e in events] == ["TRIGGER"]
+
+
+def test_setup_break_clears_deferral():
+    state = seed_entry(snap(weekly=BELOW_10, monthly=BELOW_60M, smas=FAR), TODAY)
+    state, _ = entry_step(state, snap(monthly=BELOW_60M, smas=FAR, daily=BELOW_10), TODAY)
+    state, events = entry_step(state, snap(weekly=BELOW_10, monthly=BELOW_60M, smas=FAR, daily=BELOW_10), TODAY)
+    assert events == []
+    assert state["phase"] == IDLE and state["deferred"] is False
+    # Later gap-close with no live setup fires nothing.
+    state, events = entry_step(state, snap(weekly=BELOW_10, monthly=BELOW_60M, smas=NEAR, daily=BELOW_10), TODAY)
+    assert events == []
+
+
+def test_threshold_arg_respected_and_above_or_missing_60m_unaffected():
+    # 6% below fires under the default 10% but defers under a strict 3%.
+    state = seed_entry(snap(weekly=BELOW_10, monthly=BELOW_60M, smas=NEAR), TODAY)
+    s2, events = entry_step(state, snap(monthly=BELOW_60M, smas=NEAR, daily=BELOW_10), TODAY)
+    assert [e["type"] for e in events] == ["TRIGGER"]
+    s3, events = entry_step(state, snap(monthly=BELOW_60M, smas=NEAR, daily=BELOW_10), TODAY, m60_prox_pct=3.0)
+    assert events == [] and s3["deferred"] is True
+    # No 60m SMA at all (young ticker): never deferred.
+    young = {"10": True, "20": True}
+    state = seed_entry(snap(weekly=BELOW_10, monthly=young), TODAY)
+    _, events = entry_step(state, snap(monthly=young, daily=BELOW_10), TODAY)
+    assert [e["type"] for e in events] == ["TRIGGER"]
 
 
 # --------------------------------------------------------------------------- #

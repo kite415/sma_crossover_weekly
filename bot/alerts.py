@@ -26,11 +26,19 @@ def buy_waits(snap, event):
 
 
 def _m60(snap):
-    """60-month SMA context ('nice to have' -- shown, never required)."""
+    """60-month SMA context ('nice to have' -- shown, never required). When
+    below, include the gap so you can see how close the reclaim is."""
     v = (snap.get("monthly_above") or {}).get("60")
     if v is None:
         return None  # young ticker: no 60m SMA to speak of
-    return "60m ✓" if v else "60m ✗"
+    if v:
+        return "60m ✓"
+    m60 = (snap.get("smas") or {}).get("m60")
+    px = snap.get("daily_close")
+    if m60 and px:
+        gap = (m60 - px) / px * 100.0
+        return f"60m ✗ ({gap:.1f}% below)"
+    return "60m ✗"
 
 
 def _line(ticker, snap, legs, waits=None, with_m60=False):

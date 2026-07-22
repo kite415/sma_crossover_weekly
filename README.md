@@ -36,6 +36,11 @@ the three weekly SMAs. The scanner alerts on *transitions*, not conditions:
 - The **5-week SMA** plays no role in entries — it hugs price too closely
   and its crossings are noise at universe scale. It has exactly one job:
   the SELL line for positions you hold.
+- **60m proximity rule**: a signal whose price sits *below* the 60-month SMA
+  is deferred — no alert — until price comes within `M60_PROXIMITY_PCT`
+  (default 10%) of the line. The engine keeps tracking silently and fires
+  the held alert (original trigger legs intact) the day the gap closes or
+  price crosses the 60m. Below-60m alerts show the gap: `60m ✗ (5.9% below)`.
 - **(tentative — …)** appears only when the signal is *waiting on* an
   unfinished bar — a condition that passes on the in-progress weekly or
   monthly bar but wouldn't pass on completed bars alone. The tag names
@@ -95,6 +100,7 @@ alert or `/sell`). Position alerts stay individual messages:
 | `DISCORD_TOKEN` / `GUILD_ID` / `ALERT_CHANNEL_ID` | see [SETUP.md](SETUP.md) |
 | `CONFIRM_MODE` | `live` (default): evaluate the in-progress weekly/monthly bar, tagging alerts *(tentative)*. `close`: completed bars only. The daily bar is always final on scheduled scans (they run after the close); a manual midday `/scan` evaluates the intraday price. |
 | `SCAN_HOUR` / `SCAN_MINUTE` | scan time, America/New_York (default 17:30 Mon–Fri) |
+| `M60_PROXIMITY_PCT` | below-60m signals stay silent until price is within this percent of the 60-month SMA (default 10) |
 | `DB_PATH` | SQLite location (the docker volume handles this) |
 
 ## Running it

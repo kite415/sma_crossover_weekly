@@ -24,7 +24,10 @@ class ScanResult:
     log: list = field(default_factory=list)
 
 
-def run_scan(conn, mode="live", tickers=None):
+def run_scan(conn, mode="live", tickers=None, m60_prox_pct=None):
+    if m60_prox_pct is None:
+        import os
+        m60_prox_pct = float(os.environ.get("M60_PROXIMITY_PCT", "10"))
     today = today_et().isoformat()
     scan_set = tickers if tickers is not None else universe.full_universe(conn)
     result = ScanResult()
@@ -57,7 +60,7 @@ def run_scan(conn, mode="live", tickers=None):
         snapshots[ticker] = snap
 
         was_seeded = prev is not None
-        new_state, events = entry_step(prev, snap, today)
+        new_state, events = entry_step(prev, snap, today, m60_prox_pct=m60_prox_pct)
         db.put_ticker_state(conn, ticker, new_state)
         if not was_seeded:
             seeded += 1
@@ -137,6 +140,9 @@ def main():
     ap = argparse.ArgumentParser(description="Run one scan (no Discord needed)")
     ap.add_argument("--db", default="data/bot.db")
     ap.add_argument("--mode", choices=["live", "close"], default="live")
+    ap.add_argument("--m60-prox", type=float, default=None,
+                    help="percent-of-price proximity to the 60m SMA below which "
+                         "below-60m signals announce (default: env M60_PROXIMITY_PCT or 10)")
     ap.add_argument("--tickers", help="comma-separated subset (skips universe)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print alerts instead of anything else (scan state IS persisted to --db)")
@@ -144,7 +150,7 @@ def main():
 
     conn = db.connect(args.db)
     subset = [t.strip().upper() for t in args.tickers.split(",")] if args.tickers else None
-    result = run_scan(conn, mode=args.mode, tickers=subset)
+    result = run_scan(conn, mode=args.mode, tickers=subset, m60_prox_pct=args.m60_prox)
 
     for line in result.log:
         print(line)
