@@ -11,7 +11,7 @@ import argparse
 from dataclasses import dataclass, field
 
 from bot import alerts, db, sectors, universe
-from bot.data import build_snapshot, fetch_closes, today_et
+from bot.data import build_snapshot, fetch_ohlc, today_et
 from bot.engine import entry_step, exit_step
 
 
@@ -33,7 +33,7 @@ def run_scan(conn, mode="live", tickers=None, m60_prox_pct=None):
     result = ScanResult()
     result.log.append(f"scan mode={mode} date={today} universe={len(scan_set)}")
 
-    closes = fetch_closes(scan_set)
+    closes = fetch_ohlc(scan_set)
     result.log.append(f"data for {len(closes)}/{len(scan_set)} tickers")
 
     prev_states = db.get_all_ticker_states(conn)

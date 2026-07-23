@@ -7,8 +7,8 @@ import discord
 from discord import app_commands
 
 from bot import db, sectors, universe
-from bot.data import build_snapshot, fetch_closes
-from bot.engine import all_above, gate_ok
+from bot.data import build_snapshot, fetch_closes, fetch_ohlc
+from bot.engine import all_above, gate_ok, momentum_ok, weekly_ok
 
 
 def _norm(ticker):
@@ -17,6 +17,26 @@ def _norm(ticker):
 
 def _yes(flag):
     return "✅" if flag else "❌"
+
+
+def _fmt_momentum(snap):
+    vals = snap.get("momentum_values") or {}
+    flags = snap.get("momentum") or {}
+
+    def one(label, vkey, fkey, fmt="{:.1f}"):
+        v = vals.get(vkey)
+        if v is None:
+            return f"{label} n/a"
+        return f"{label} {fmt.format(v)} {_yes(flags.get(fkey))}"
+
+    return (
+        "**Momentum (wk)** — "
+        + " · ".join([
+            one("RSI", "rsi", "rsi"),
+            one("KDJ(K)", "kdj_k", "kdj"),
+            one("MACD", "macd", "macd", "{:+.2f}"),
+        ])
+    )
 
 
 def _fmt_timeframe(name, flags, above5=None):
@@ -105,10 +125,10 @@ def register(tree, conn, cfg, run_scan_and_post):
         await interaction.response.defer()
 
         def fetch_snap():
-            closes = fetch_closes([ticker])
-            if ticker not in closes:
+            ohlc = fetch_ohlc([ticker])
+            if ticker not in ohlc:
                 return None
-            return build_snapshot(ticker, closes[ticker], mode=cfg.confirm_mode)
+            return build_snapshot(ticker, ohlc[ticker], mode=cfg.confirm_mode)
 
         snap = await asyncio.to_thread(fetch_snap)
         if snap is None:
@@ -117,8 +137,9 @@ def register(tree, conn, cfg, run_scan_and_post):
         state = db.get_ticker_state(conn, ticker)
         phase = state["phase"] if state else "(not scanned yet)"
         gate = gate_ok(snap["monthly_above"])
-        weekly_all = all_above(snap["weekly_above"])
-        live = gate and weekly_all
+        weekly_all = weekly_ok(snap["weekly_above"])
+        mom = momentum_ok(snap.get("momentum"))
+        live = gate and weekly_all and mom
         held = db.get_open_position(conn, ticker) is not None
         # DB-only sector lookup (fetch_missing=False keeps it off-network and
         # safe on the event loop); populated for extras by the first scan.
@@ -129,9 +150,10 @@ def register(tree, conn, cfg, run_scan_and_post):
             + cat_txt + (" · 📒 held" if held else ""),
             _fmt_timeframe("Monthly", snap["monthly_above"]),
             _fmt_timeframe("Weekly", snap["weekly_above"], above5=snap["above_5w"]),
+            _fmt_momentum(snap),
             _fmt_timeframe("Daily", snap["daily_above"]),
-            f"Setup live: {_yes(live)} (gate {_yes(gate)} · weekly {_yes(weekly_all)}) · "
-            f"5wk exit line: {_yes(bool(snap['above_5w']))}",
+            f"Setup live: {_yes(live)} (gate {_yes(gate)} · weekly SMA {_yes(weekly_all)} "
+            f"· momentum {_yes(mom)}) · 5wk exit line: {_yes(bool(snap['above_5w']))}",
         ]
         await interaction.followup.send("\n".join(lines))
 

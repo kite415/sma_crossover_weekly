@@ -9,6 +9,8 @@ from datetime import datetime
 import pandas as pd
 import yfinance as yf
 
+from bot import indicators
+
 try:
     from zoneinfo import ZoneInfo
     _NY = ZoneInfo("America/New_York")
@@ -31,9 +33,13 @@ def today_et():
     return now.date()
 
 
-def fetch_closes(tickers, period=FETCH_PERIOD, pause=1.0):
-    """Batch-download daily closes. Returns {ticker: pd.Series} (missing /
-    empty tickers are simply absent). Never raises for individual tickers."""
+OHLC_COLS = ["High", "Low", "Close"]
+
+
+def fetch_ohlc(tickers, period=FETCH_PERIOD, pause=1.0):
+    """Batch-download daily High/Low/Close. Returns {ticker: pd.DataFrame}
+    (missing / empty tickers are simply absent). Never raises for
+    individual tickers. Highs/lows feed the weekly KDJ."""
     out = {}
     tickers = list(tickers)
     for i in range(0, len(tickers), BATCH_SIZE):
@@ -54,18 +60,20 @@ def fetch_closes(tickers, period=FETCH_PERIOD, pause=1.0):
             continue
         for t in chunk:
             try:
-                closes = (
-                    df[t]["Close"] if isinstance(df.columns, pd.MultiIndex)
-                    else df["Close"]
-                )
-                closes = closes.dropna()
-                if not closes.empty:
-                    out[t] = closes
+                sub = df[t] if isinstance(df.columns, pd.MultiIndex) else df
+                ohlc = sub[OHLC_COLS].dropna(subset=["Close"])
+                if not ohlc.empty:
+                    out[t] = ohlc
             except (KeyError, TypeError):
                 continue
         if i + BATCH_SIZE < len(tickers):
             time.sleep(pause)  # be polite to Yahoo between chunks
     return out
+
+
+def fetch_closes(tickers, period=FETCH_PERIOD, pause=1.0):
+    """Close-only view of fetch_ohlc (kept for ticker validation)."""
+    return {t: df["Close"] for t, df in fetch_ohlc(tickers, period, pause).items()}
 
 
 def _trim_in_progress(series, mode, today):
@@ -94,8 +102,29 @@ def _sma_flags(closes, periods):
     return flags, values
 
 
-def build_snapshot(ticker, daily_closes, mode="live", today=None):
+def _momentum(weekly_frame):
+    """Weekly momentum flags + display values from an H/L/C frame."""
+    closes = weekly_frame["Close"]
+    r = indicators.rsi(closes)
+    k = indicators.kdj_k(weekly_frame["High"], weekly_frame["Low"], closes)
+    m = indicators.macd_line(closes)
+    flags = {
+        "rsi": None if r is None else r > 50.0,
+        "kdj": None if k is None else k > 50.0,
+        "macd": None if m is None else m > 0.0,
+    }
+    values = {
+        "rsi": None if r is None else round(r, 1),
+        "kdj_k": None if k is None else round(k, 1),
+        "macd": None if m is None else round(m, 3),
+    }
+    return flags, values
+
+
+def build_snapshot(ticker, ohlc, mode="live", today=None):
     """Snapshot dict for engine.py, or None if the ticker can't be evaluated.
+    `ohlc` is a daily DataFrame with High/Low/Close (a bare close Series is
+    also accepted and upgraded with High=Low=Close).
 
     The daily bar is never trimmed: scheduled scans run after the 4pm ET
     close, so the last daily bar is final. (A manual midday /scan evaluates
@@ -103,13 +132,21 @@ def build_snapshot(ticker, daily_closes, mode="live", today=None):
     """
     if today is None:
         today = today_et()
-    closes = daily_closes.dropna()
-    if closes.empty:
+    if isinstance(ohlc, pd.Series):
+        ohlc = pd.DataFrame({"High": ohlc, "Low": ohlc, "Close": ohlc})
+    ohlc = ohlc.dropna(subset=["Close"])
+    if ohlc.empty:
         return None
+    closes = ohlc["Close"]
 
-    weekly, tent_w = _trim_in_progress(
-        closes.resample("W-FRI").last().dropna(), mode, today
+    weekly_hlc, tent_w = _trim_in_progress(
+        ohlc.resample("W-FRI")
+        .agg({"High": "max", "Low": "min", "Close": "last"})
+        .dropna(subset=["Close"]),
+        mode,
+        today,
     )
+    weekly = weekly_hlc["Close"]
     monthly, tent_m = _trim_in_progress(
         closes.resample("ME").last().dropna(), mode, today
     )
@@ -125,10 +162,14 @@ def build_snapshot(ticker, daily_closes, mode="live", today=None):
     # only when a condition passes live but NOT confirmed -- i.e. the signal
     # is genuinely waiting on the bar to close. In close mode the open bar
     # was already dropped, so confirmed == live and nothing is ever pending.
-    w_conf_series = weekly.iloc[:-1] if tent_w else weekly
+    w_conf_frame = weekly_hlc.iloc[:-1] if tent_w else weekly_hlc
+    w_conf_series = w_conf_frame["Close"]
     m_conf_series = monthly.iloc[:-1] if tent_m else monthly
     w_flags_conf, _ = _sma_flags(w_conf_series, WEEKLY_SMAS)
     m_flags_conf, _ = _sma_flags(m_conf_series, MONTHLY_SMAS)
+
+    momentum, momentum_values = _momentum(weekly_hlc)
+    momentum_conf, _ = _momentum(w_conf_frame)
 
     def _above_5w(series):
         if len(series) < WEEKLY_EXIT_SMA + 1:
@@ -155,6 +196,9 @@ def build_snapshot(ticker, daily_closes, mode="live", today=None):
         "monthly_above": m_flags,
         "weekly_above_confirmed": w_flags_conf,
         "monthly_above_confirmed": m_flags_conf,
+        "momentum": momentum,
+        "momentum_confirmed": momentum_conf,
+        "momentum_values": momentum_values,
         "above_5w": above_5w,
         "above_5w_confirmed": above_5w_conf,
         "smas": smas,

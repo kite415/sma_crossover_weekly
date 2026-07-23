@@ -11,12 +11,14 @@ Three timeframes, three roles:
 
 | Timeframe | Role | Condition |
 |---|---|---|
-| **Monthly** | Regime gate | close above the 10- and 20-month SMAs (the 60-month is context only — shown on alerts as `60m ✓/✗`, never required) |
-| **Weekly** | Trigger | close above the 10/20/60-week SMAs |
+| **Monthly** | Regime gate | close above the 10-month SMA (20m/60m are context — `60m ✓/✗` shown on alerts, never required) |
+| **Weekly** | Trigger | close above the 10- and 20-week SMAs (60wk is context: `60w ✓/✗`) **and momentum confirms**: RSI(14) > 50, KDJ(9,3,3) K-line > 50, MACD(12,26) line > 0 |
 | **Daily** | Entry confirm | close above the 10/20/60-day SMAs |
 
-A setup is **live** when the monthly gate holds and the weekly close is above
-the three weekly SMAs. The scanner alerts on *transitions*, not conditions:
+A setup is **live** when the monthly gate holds, the weekly close is above
+the 10/20-week SMAs, and all three momentum indicators confirm (an
+incomputable indicator on a young ticker fails the setup). The scanner
+alerts on *transitions*, not conditions:
 
 ```
             trigger (setup completes)        daily confirm
@@ -27,8 +29,9 @@ the three weekly SMAs. The scanner alerts on *transitions*, not conditions:
 ```
 
 - **Trigger** — the setup goes from not-live to live, whatever leg completed
-  last: a 10wk reclaim (pullback resuming), a 60wk reclaim (recovery
-  breakout), or the monthly gate completing. The alert names the leg.
+  last: a 10/20wk SMA reclaim, the monthly gate completing (10m reclaim),
+  or a momentum indicator confirming ("RSI crossed 50", "KDJ crossed 50",
+  "MACD turned positive"). The alert names the leg.
 - **BUY** — a triggered ticker's daily close is above all three daily SMAs
   (often the same evening as the trigger).
 - **Reset** — a weekly close back below any of the 10/20/60-week SMAs (or

@@ -41,10 +41,20 @@ def _m60(snap):
     return "60m ✗"
 
 
+def _w60(snap):
+    """60-week SMA context (like the 60m: shown, never required)."""
+    v = (snap.get("weekly_above") or {}).get("60")
+    if v is None:
+        return None
+    return "60w ✓" if v else "60w ✗"
+
+
 def _line(ticker, snap, legs, waits=None, with_m60=False):
     parts = [", ".join(legs) if legs else "setup live"]
-    if with_m60 and _m60(snap):
-        parts.append(_m60(snap))
+    if with_m60:
+        for ctx in (_w60(snap), _m60(snap)):
+            if ctx:
+                parts.append(ctx)
     if waits:
         parts.extend(waits)
     return f"**{ticker}** ${snap['daily_close']:.2f} — " + " · ".join(parts)
