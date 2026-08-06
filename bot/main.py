@@ -39,6 +39,11 @@ class ScannerBot(discord.Client):
                 timezone="America/New_York",
             ),
             name="daily-scan",
+            # If the machine sleeps through the scan time, run the scan as
+            # soon as it wakes instead of skipping it (the default grace is
+            # 1 second). coalesce folds multiple missed days into one run.
+            misfire_grace_time=None,
+            coalesce=True,
         )
         self.scheduler.start()
         log.info(

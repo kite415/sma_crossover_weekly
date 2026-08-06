@@ -102,7 +102,7 @@ alert or `/sell`). Position alerts stay individual messages:
 |---|---|
 | `DISCORD_TOKEN` / `GUILD_ID` / `ALERT_CHANNEL_ID` | see [SETUP.md](SETUP.md) |
 | `CONFIRM_MODE` | `live` (default): evaluate the in-progress weekly/monthly bar, tagging alerts *(tentative)*. `close`: completed bars only. The daily bar is always final on scheduled scans (they run after the close); a manual midday `/scan` evaluates the intraday price. |
-| `SCAN_HOUR` / `SCAN_MINUTE` | scan time, America/New_York (default 17:30 Mon–Fri) |
+| `SCAN_HOUR` / `SCAN_MINUTE` | scan time, America/New_York (default 16:10 Mon–Fri, right after the close) |
 | `M60_PROXIMITY_PCT` | below-60m signals stay silent until price is within this percent of the 60-month SMA (default 10) |
 | `DB_PATH` | SQLite location (the docker volume handles this) |
 

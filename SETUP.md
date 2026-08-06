@@ -81,7 +81,7 @@ binary directly (services don't run `conda activate`; find yours with
 
 - **Mac (launchd)** — `~/Library/LaunchAgents/com.sma.bot.plist` with
   `KeepAlive` + `RunAtLoad`. Wrap the command in `caffeinate` so the Mac
-  can't idle-sleep past the 17:30 scan while the bot is running — launchd
+  can't idle-sleep past the post-close scan while the bot is running — launchd
   handles crashes/reboots, caffeinate handles sleep:
 
   ```xml
