@@ -7,35 +7,41 @@ you actually hold for exit alerts.
 
 ## The strategy
 
-Three timeframes, three roles:
+Eligibility plus two timeframes:
 
-| Timeframe | Role | Condition |
+| Layer | Role | Condition |
 |---|---|---|
-| **Monthly** | Regime gate | close above the 10-month SMA (20m/60m are context — `60m ✓/✗` shown on alerts, never required) |
-| **Weekly** | Trigger | close above the 10- and 20-week SMAs (60wk is context: `60w ✓/✗`) **and momentum confirms**: RSI(14) > 50, KDJ(9,3,3) K-line > 50, MACD(12,26) line > 0 |
+| **Drawdown arm** | Eligibility | the stock is recovering from a drawdown **episode** that reached ≥ `DD_ARM_PCT` (default 30%) below its high (highest close in the ~10y data window). Arming latches for the whole recovery and resets when a new high ends the episode. Stocks grinding along near their highs never alert. |
+| **Weekly** | Trigger | close above the 10- and 20-week SMAs (60wk is context: `60w ✓/✗`; monthly SMAs are context too, incl. `60m ✓/✗`) **and momentum confirms**: RSI(14) > 50, KDJ(9,3,3) K-line > 50, MACD(12,26) line > 0 |
 | **Daily** | Entry confirm | close above the 10/20/60-day SMAs |
 
-A setup is **live** when the monthly gate holds, the weekly close is above
-the 10/20-week SMAs, and all three momentum indicators confirm (an
-incomputable indicator on a young ticker fails the setup). The scanner
-alerts on *transitions*, not conditions:
+A setup is **live** when the ticker is armed, the weekly close is above the
+10/20-week SMAs, and all three momentum indicators confirm (an incomputable
+indicator on a young ticker fails the setup). The scanner alerts on
+*transitions*, not conditions:
 
 ```
             trigger (setup completes)        daily confirm
   IDLE ────────────────────────▶ TRIGGERED ────────────────▶ SIGNALED
     ▲            📢 digest                       ✅ BUY          │
-    └──────── weekly close < a 10/20/60wk SMA, or gate breaks ◀─┘
-                              (silent)
+    └── CONFIRMED weekly close below a 10/20wk SMA / momentum ◀─┘
+        cross-down, or the episode ends at a new high (silent)
 ```
 
-- **Trigger** — the setup goes from not-live to live, whatever leg completed
-  last: a 10/20wk SMA reclaim, the monthly gate completing (10m reclaim),
-  or a momentum indicator confirming ("RSI crossed 50", "KDJ crossed 50",
-  "MACD turned positive"). The alert names the leg.
+- **Trigger** — the setup goes from not-live to live via a real price flip,
+  whatever leg completed last: a 10/20wk SMA reclaim or a momentum
+  indicator confirming ("RSI crossed 50", "KDJ crossed 50", "MACD turned
+  positive"). The alert names the leg. Becoming *armed* is never a leg —
+  eligibility engaging alone can't fire an alert.
 - **BUY** — a triggered ticker's daily close is above all three daily SMAs
   (often the same evening as the trigger).
-- **Reset** — a weekly close back below any of the 10/20/60-week SMAs (or
-  the gate breaking) silently ends the setup; reclaiming is a fresh trigger.
+- **Reset** — silent, and only on *confirmed* weakness: a **completed**
+  weekly close back below the 10/20-week SMAs / momentum thresholds (from a
+  week ending on or after the week the setup went live, with the live bar
+  not already back above), or the drawdown episode ending at a new high.
+  Mid-week wobbles on the in-progress bar hold state instead of resetting,
+  so a Tuesday trigger that sags into Friday and bounces Monday does **not**
+  re-announce. After a confirmed reset, reclaiming is a fresh trigger.
 - The **5-week SMA** plays no role in entries — it hugs price too closely
   and its crossings are noise at universe scale. It has exactly one job:
   the SELL line for positions you hold.
@@ -45,12 +51,11 @@ alerts on *transitions*, not conditions:
   the held alert (original trigger legs intact) the day the gap closes or
   price crosses the 60m. Below-60m alerts show the gap: `60m ✗ (5.9% below)`.
 - **(tentative — …)** appears only when the signal is *waiting on* an
-  unfinished bar — a condition that passes on the in-progress weekly or
-  monthly bar but wouldn't pass on completed bars alone. The tag names
-  what's pending: `(tentative — pending Fri Jul 17 close)` for a midweek
-  weekly reclaim, `(tentative — monthly gate pending July close)` when the
-  gate rests on the partial month. An open bar the signal doesn't depend on
-  never tags; in `close` mode nothing is ever tentative.
+  unfinished bar — a condition that passes on the in-progress weekly bar
+  but wouldn't pass on completed bars alone. The tag names what's pending:
+  `(tentative — pending Fri Jul 17 close)` for a midweek weekly reclaim. An
+  open bar the signal doesn't depend on never tags; in `close` mode nothing
+  is ever tentative.
 
 An SMA with insufficient history is skipped (the 10/20 must exist; the 60 is
 optional so young tickers still qualify). New tickers seed silently — no
@@ -68,8 +73,8 @@ appears in exactly one; empty sections are omitted):
 
 | Section | Meaning |
 |---|---|
-| ✅ **BUY** | all three timeframes aligned. Each line carries its context inline: the trigger leg, `60m ✓/✗` (the nice-to-have), and any pending bar (`pending Fri Jul 24 close`, `pending month close (gate)`). No pending tag = firm signal. |
-| 👀 **Setup complete — watching daily confirm** | triggered on the weekly/monthly, daily SMAs not yet all above; moves to BUY the day it confirms |
+| ✅ **BUY** | armed + weekly + daily aligned. Each line carries its context inline: the trigger leg, the drawdown episode (`−52% max · 32% off high`), `60w`/`60m ✓/✗` (nice-to-haves), and any pending bar (`pending Fri Jul 24 close`). No pending tag = firm signal. |
+| 👀 **Setup complete — watching daily confirm** | triggered on the weekly, daily SMAs not yet all above; moves to BUY the day it confirms |
 
 Within each section, tickers are grouped under emoji sector headers with
 **💻 Tech always first** (a broad bucket: GICS Information Technology +
@@ -104,6 +109,7 @@ alert or `/sell`). Position alerts stay individual messages:
 | `CONFIRM_MODE` | `live` (default): evaluate the in-progress weekly/monthly bar, tagging alerts *(tentative)*. `close`: completed bars only. The daily bar is always final on scheduled scans (they run after the close); a manual midday `/scan` evaluates the intraday price. |
 | `SCAN_HOUR` / `SCAN_MINUTE` | scan time, America/New_York (default 16:10 Mon–Fri, right after the close) |
 | `M60_PROXIMITY_PCT` | below-60m signals stay silent until price is within this percent of the 60-month SMA (default 10) |
+| `DD_ARM_PCT` | drawdown-episode arm threshold: a ticker is only eligible to trigger while recovering from a decline of at least this percent off its high (default 30) |
 | `DB_PATH` | SQLite location (the docker volume handles this) |
 
 ## Running it
@@ -130,7 +136,7 @@ pytest tests/
 - The universe refreshes from Wikipedia weekly and falls back to its cached
   copy if the scrape fails. A ticker leaving the index is dropped silently —
   unless you hold it, in which case it stays tracked until you `/sell`.
-- The monthly gate is entry-only: once you're in a position, exits are the
-  10-day warning and the 5-week SELL, never the gate.
+- The drawdown arm is entry-only: once you're in a position, exits are the
+  10-day warning and the 5-week SELL — a new high never triggers a sell.
 - One data hiccup never ejects state: a ticker with no data this scan keeps
   yesterday's state untouched.

@@ -8,7 +8,7 @@ from discord import app_commands
 
 from bot import db, sectors, universe
 from bot.data import build_snapshot, fetch_closes, fetch_ohlc
-from bot.engine import all_above, gate_ok, momentum_ok, weekly_ok
+from bot.engine import all_above, dd_armed, momentum_ok, weekly_ok
 
 
 def _norm(ticker):
@@ -136,10 +136,14 @@ def register(tree, conn, cfg, run_scan_and_post):
             return
         state = db.get_ticker_state(conn, ticker)
         phase = state["phase"] if state else "(not scanned yet)"
-        gate = gate_ok(snap["monthly_above"])
+        armed = dd_armed(snap, cfg.dd_arm_pct)
         weekly_all = weekly_ok(snap["weekly_above"])
         mom = momentum_ok(snap.get("momentum"))
-        live = gate and weekly_all and mom
+        live = armed and weekly_all and mom
+        dd = snap.get("drawdown") or {}
+        arm_txt = _yes(armed)
+        if dd.get("episode_dd_pct") is not None:
+            arm_txt += f" (−{dd['episode_dd_pct']:.0f}% max, {dd['off_high_pct']:.0f}% off high)"
         held = db.get_open_position(conn, ticker) is not None
         # DB-only sector lookup (fetch_missing=False keeps it off-network and
         # safe on the event loop); populated for extras by the first scan.
@@ -152,7 +156,7 @@ def register(tree, conn, cfg, run_scan_and_post):
             _fmt_timeframe("Weekly", snap["weekly_above"], above5=snap["above_5w"]),
             _fmt_momentum(snap),
             _fmt_timeframe("Daily", snap["daily_above"]),
-            f"Setup live: {_yes(live)} (gate {_yes(gate)} · weekly SMA {_yes(weekly_all)} "
+            f"Setup live: {_yes(live)} (armed {arm_txt} · weekly SMA {_yes(weekly_all)} "
             f"· momentum {_yes(mom)}) · 5wk exit line: {_yes(bool(snap['above_5w']))}",
         ]
         await interaction.followup.send("\n".join(lines))

@@ -6,27 +6,37 @@ here is unit-tested with synthetic dicts in tests/test_engine.py.
 Strategy recap
 --------------
 Entry engine (runs over the whole universe):
-  * monthly gate  = monthly close above its 10-month SMA (user 2026-07-23).
-    The 60-month SMA is context only ("nice to have") -- shown on alerts as
-    60m checkmark/cross but never required and never a trigger leg.
+  * drawdown arm  = the ticker is in a drawdown EPISODE that reached at least
+    30% below its high (highest close in the ~10y data window) and hasn't
+    fully recovered yet (user 2026-08-10, replacing the monthly 10m gate).
+    Arming latches for the whole recovery; a new high ends the episode and
+    disarms. The arm is an eligibility precondition -- it is never a trigger
+    leg, so becoming armed alone can't fire an alert.
   * weekly setup  = weekly close above its 10- and 20-week SMAs, AND weekly
     momentum confirms: RSI(14) > 50, KDJ(9,3,3) K-line > 50, MACD(12,26)
     line > 0. An incomputable indicator (young ticker) fails the setup.
-    The 60-week SMA is context only (like the 60m; no proximity rule).
-  * setup is LIVE when: gate AND weekly setup
+    The 60-week SMA is context only (no proximity rule). The 60-month SMA
+    is likewise context only, but keeps its proximity rule (below).
+  * setup is LIVE when: armed AND weekly setup
   * TRIGGER  = setup goes not-live -> live via a real price flip; the alert
-    names whichever leg(s) completed last (10wk/20wk/60wk reclaim or the
-    monthly gate). The 5-week SMA plays NO role in the entry engine -- it
+    names whichever weekly leg(s) completed last (10wk/20wk reclaim or a
+    momentum cross). The 5-week SMA plays NO role in the entry engine -- it
     hugs price so closely that its crossings are noise at universe scale
     (user feedback 2026-07-14); it is only the exit engine's SELL line.
   * BUY      = a triggered ticker's daily close is above its 10/20/60-day SMAs
     (may happen the same scan as the trigger).
+  * Confirmed-bar reset (user 2026-08-10, GOOG double-alert): once live, the
+    setup only resets when a COMPLETED weekly bar -- from a week ending on or
+    after the week the setup went live -- fails it and the live bar isn't
+    already back above. Mid-week wobbles on the in-progress bar hold state,
+    so a Tue trigger that sags into Friday and bounces Monday does NOT
+    re-announce.
   * Alerts are tagged tentative ONLY when the signal is waiting on an
     unfinished bar -- a condition that passes on the live (in-progress)
-    weekly/monthly bar but would NOT pass on completed bars alone. The tag
-    names what's pending ("pending Fri Jul 17 close", "monthly gate pending
-    July close"). An open bar that the signal doesn't depend on never tags
-    (user feedback 2026-07-15; earlier blanket rules made the tag noise).
+    weekly bar but would NOT pass on completed bars alone. The tag names
+    what's pending ("pending Fri Jul 17 close"). An open bar that the signal
+    doesn't depend on never tags (user feedback 2026-07-15; earlier blanket
+    rules made the tag noise).
 
 Exit engine (runs ONLY over positions the user actually holds):
   * daily close below the 10-day SMA  -> WARNING, once per dip (re-arms when
@@ -50,7 +60,6 @@ TRIGGERED = "TRIGGERED"  # setup announced, waiting for the daily confirm
 SIGNALED = "SIGNALED"    # BUY sent (or consumed); quiet until the setup resets
 
 REQUIRED_KEYS = ("10", "20")  # daily confirm: these SMAs must exist to pass
-GATE_KEYS = ("10",)           # the monthly gate: only the 10m is required
 WEEKLY_REQ = ("10", "20")     # weekly SMAs required; 60wk is context only
 MOMENTUM_KEYS = ("rsi", "kdj", "macd")
 MOMENTUM_LEG_NAMES = {
@@ -69,9 +78,13 @@ def all_above(flags):
     return all(flags.values())
 
 
-def gate_ok(monthly_flags):
-    """Monthly gate: above the 10m SMA. The 20m/60m never gate."""
-    return all((monthly_flags or {}).get(k) is True for k in GATE_KEYS)
+def dd_armed(snap, pct):
+    """Drawdown-episode arm: the decline from the (10y) high reached `pct`
+    percent and the ticker hasn't recovered to a new high yet (a new high
+    collapses episode_dd_pct to ~0). No drawdown facts -> not armed."""
+    dd = snap.get("drawdown") or {}
+    ep = dd.get("episode_dd_pct")
+    return ep is not None and ep >= pct
 
 
 def weekly_ok(weekly_flags):
@@ -120,33 +133,26 @@ def _weekly_label(iso):
     return f"{d.strftime('%a %b')} {d.day}"
 
 
-def _month_label(iso):
-    if not iso:
-        return "month"
-    return date.fromisoformat(iso).strftime("%B")
-
-
-def entry_pending(snap, gate, weekly_side):
+def entry_pending(snap, weekly_side):
     """What the current signal is still waiting on: conditions that pass on
     the live bar but not on completed bars alone. Empty when fully confirmed
     (always, in close mode -- confirmed maps equal the live maps there).
     weekly_side covers both the weekly SMAs and the momentum trio (all are
-    weekly-bar conditions)."""
+    weekly-bar conditions). The drawdown arm is daily-close data and never
+    pends."""
     pending = []
     weekly_conf = weekly_ok(
         snap.get("weekly_above_confirmed", snap["weekly_above"])
     ) and momentum_ok(snap.get("momentum_confirmed", snap.get("momentum")))
-    gate_conf = gate_ok(snap.get("monthly_above_confirmed", snap["monthly_above"]))
     if weekly_side and not weekly_conf:
         pending.append(f"pending {_weekly_label(snap['bar_dates'].get('weekly'))} close")
-    if gate and not gate_conf:
-        pending.append(f"monthly gate pending {_month_label(snap['bar_dates'].get('monthly'))} close")
     return pending
 
 
-def trigger_legs(prev, snap, gate):
+def trigger_legs(prev, snap):
     """Which leg(s) of the setup completed this scan. Empty list means the
-    not-live -> live transition wasn't driven by a real price flip."""
+    not-live -> live transition wasn't driven by a real price flip (e.g. an
+    SMA becoming computable, or the drawdown arm engaging)."""
     legs = []
     weekly_flips = [
         k for k in _flipped(prev.get("weekly_above"), snap["weekly_above"])
@@ -157,37 +163,29 @@ def trigger_legs(prev, snap, gate):
     for k in MOMENTUM_KEYS:
         if k in _flipped(prev.get("momentum"), snap.get("momentum")):
             legs.append(MOMENTUM_LEG_NAMES[k])
-    if gate and prev.get("gate") is False:
-        monthly_flips = [
-            k for k in _flipped(prev.get("monthly_above"), snap["monthly_above"])
-            if k in GATE_KEYS  # a 20m/60m flip is context, never a trigger leg
-        ]
-        if monthly_flips:
-            legs.append(
-                "monthly gate completed ("
-                + "/".join(f"{k}m" for k in sorted(monthly_flips, key=int))
-                + " reclaim)"
-            )
     return legs
 
 
-def seed_entry(snap, today):
+def seed_entry(snap, today, dd_arm_pct=30.0):
     """First sighting of a ticker: record current truth, never alert."""
-    gate = gate_ok(snap["monthly_above"])
+    armed = dd_armed(snap, dd_arm_pct)
     weekly_all = weekly_ok(snap["weekly_above"])
     mom = momentum_ok(snap.get("momentum"))
+    setup_live = armed and weekly_all and mom
     return {
         "phase": IDLE,
-        "gate": gate,
+        "dd_armed": armed,
         "weekly_all": weekly_all,
         "momentum_all": mom,
         "above_5w": bool(snap.get("above_5w")),  # informational (/status)
-        "setup_live": gate and weekly_all and mom,
+        "setup_live": setup_live,
+        "live_since_week": snap["bar_dates"].get("weekly") if setup_live else None,
         "monthly_above": dict(snap["monthly_above"]),
         "weekly_above": dict(snap["weekly_above"]),
         "momentum": dict(snap.get("momentum") or {}),
         "daily_above": dict(snap["daily_above"]),
         "daily_close": snap.get("daily_close"),
+        "drawdown": dict(snap.get("drawdown") or {}),
         "smas": dict(snap.get("smas") or {}),
         "last_trigger_week": None,
         "last_trigger_legs": [],
@@ -197,7 +195,7 @@ def seed_entry(snap, today):
     }
 
 
-def entry_step(prev, snap, today, m60_prox_pct=10.0):
+def entry_step(prev, snap, today, m60_prox_pct=10.0, dd_arm_pct=30.0):
     """
     Advance one ticker's entry machine by one scan.
 
@@ -206,23 +204,26 @@ def entry_step(prev, snap, today, m60_prox_pct=10.0):
     m60_prox_pct: below-60m signals are deferred (state advances silently,
     no events) until price is within this percent of the 60m line; the
     stored announcement fires the scan the gap closes.
+    dd_arm_pct: the drawdown-episode arm threshold (percent below the high).
     Returns (new_state, events) where events is a list of dicts:
       {"type": "TRIGGER", "legs": [...], "pending": [...], "tentative": bool}
       {"type": "BUY", "legs": [...], "pending": [...], "tentative": bool}
     """
     if prev is None:
-        return seed_entry(snap, today), []
+        return seed_entry(snap, today, dd_arm_pct=dd_arm_pct), []
 
-    gate = gate_ok(snap["monthly_above"])
+    armed = dd_armed(snap, dd_arm_pct)
     weekly_all = weekly_ok(snap["weekly_above"])
     mom = momentum_ok(snap.get("momentum"))
-    setup_live = gate and weekly_all and mom
+    live_now = armed and weekly_all and mom
     daily_confirm = all_above(snap["daily_above"])
     weekly_bar = snap["bar_dates"].get("weekly")
-    pending = entry_pending(snap, gate, weekly_all and mom)
+    pending = entry_pending(snap, weekly_all and mom)
 
     events = []
     phase = prev.get("phase", IDLE)
+    was_live = prev.get("setup_live", False)
+    live_since_week = prev.get("live_since_week")
     last_trigger_week = prev.get("last_trigger_week")
     # Legs persist so a BUY that confirms days after its trigger still names
     # what completed the setup.
@@ -230,12 +231,36 @@ def entry_step(prev, snap, today, m60_prox_pct=10.0):
     deferred = bool(prev.get("deferred"))
     prox_ok = m60_ok(snap, m60_prox_pct)
 
+    # Confirmed-bar reset: a live setup survives failures on the in-progress
+    # weekly bar; it tears down only when the confirmed side also fails on a
+    # completed week ending on/after the week it went live. This is what
+    # keeps a Tue trigger that sags into Friday and bounces Monday from
+    # re-announcing (GOOG, 2026-08-10). A state predating live_since_week
+    # tracking resets like it always did.
+    setup_live = live_now
+    if not live_now and was_live:
+        conf_live = (
+            weekly_ok(snap.get("weekly_above_confirmed", snap["weekly_above"]))
+            and momentum_ok(snap.get("momentum_confirmed", snap.get("momentum")))
+            and armed
+        )
+        conf_week = snap["bar_dates"].get("weekly_confirmed")
+        confirmed_failure = not conf_live and (
+            live_since_week is None
+            or (conf_week is not None and conf_week >= live_since_week)
+        )
+        if not confirmed_failure:
+            setup_live = True  # mid-week wobble: hold phase and liveness
+
     if not setup_live:
-        phase = IDLE  # silent reset (weekly break or gate break)
+        phase = IDLE  # silent reset (confirmed weekly break or disarm)
         deferred = False
+        live_since_week = None
     else:
-        if phase == IDLE and not prev.get("setup_live", False):
-            legs = trigger_legs(prev, snap, gate)
+        if live_since_week is None:
+            live_since_week = weekly_bar
+        if phase == IDLE and not was_live:
+            legs = trigger_legs(prev, snap)
             if legs:  # real price flip -- not just an SMA becoming computable
                 phase = TRIGGERED
                 last_trigger_legs = legs
@@ -277,16 +302,18 @@ def entry_step(prev, snap, today, m60_prox_pct=10.0):
 
     new = {
         "phase": phase,
-        "gate": gate,
+        "dd_armed": armed,
         "weekly_all": weekly_all,
         "momentum_all": mom,
         "above_5w": bool(snap.get("above_5w")),  # informational (/status)
         "setup_live": setup_live,
+        "live_since_week": live_since_week,
         "monthly_above": dict(snap["monthly_above"]),
         "weekly_above": dict(snap["weekly_above"]),
         "momentum": dict(snap.get("momentum") or {}),
         "daily_above": dict(snap["daily_above"]),
         "daily_close": snap.get("daily_close"),
+        "drawdown": dict(snap.get("drawdown") or {}),
         "smas": dict(snap.get("smas") or {}),
         "last_trigger_week": last_trigger_week,
         "last_trigger_legs": last_trigger_legs,

@@ -16,13 +16,7 @@ def _tent(event):
 def buy_waits(snap, event):
     """Inline tokens for what a BUY still awaits (unfinished bars only --
     the 60m is context, not a wait). Empty = firm signal."""
-    waits = []
-    for p in event.get("pending") or []:
-        if p.startswith("monthly gate"):
-            waits.append("pending month close (gate)")
-        elif p.startswith("pending "):
-            waits.append(p)  # "pending Fri Jul 24 close"
-    return waits
+    return [p for p in event.get("pending") or [] if p.startswith("pending ")]
 
 
 def _m60(snap):
@@ -49,10 +43,20 @@ def _w60(snap):
     return "60w ✓" if v else "60w ✗"
 
 
+def _dd(snap):
+    """Drawdown-episode context: how deep the crash went and where the
+    recovery stands (e.g. '−52% max · 32% off high')."""
+    dd = snap.get("drawdown") or {}
+    ep, off = dd.get("episode_dd_pct"), dd.get("off_high_pct")
+    if ep is None or off is None:
+        return None
+    return f"−{ep:.0f}% max · {off:.0f}% off high"
+
+
 def _line(ticker, snap, legs, waits=None, with_m60=False):
     parts = [", ".join(legs) if legs else "setup live"]
     if with_m60:
-        for ctx in (_w60(snap), _m60(snap)):
+        for ctx in (_dd(snap), _w60(snap), _m60(snap)):
             if ctx:
                 parts.append(ctx)
     if waits:

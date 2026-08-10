@@ -182,6 +182,20 @@ def build_snapshot(ticker, ohlc, mode="live", today=None):
     if sma5 is not None:
         w_vals[str(WEEKLY_EXIT_SMA)] = round(sma5, 4)
 
+    # Drawdown-episode facts ("high" = highest close inside the fetch window,
+    # so ~10y, on adjusted prices). A close at a new high makes the episode
+    # low equal the peak -> episode_dd_pct ~ 0, which is how the engine's
+    # arm naturally resets on full recovery.
+    peak = float(closes.max())
+    peak_date = closes.idxmax()
+    episode_low = float(closes[closes.index >= peak_date].min())
+    drawdown = {
+        "peak": round(peak, 4),
+        "peak_date": peak_date.date().isoformat(),
+        "episode_dd_pct": round((peak - episode_low) / peak * 100.0, 2),
+        "off_high_pct": round((peak - float(closes.iloc[-1])) / peak * 100.0, 2),
+    }
+
     smas = {f"d{k}": v for k, v in d_vals.items()}
     smas.update({f"w{k}": v for k, v in w_vals.items()})
     smas.update({f"m{k}": v for k, v in m_vals.items()})
@@ -201,6 +215,7 @@ def build_snapshot(ticker, ohlc, mode="live", today=None):
         "momentum_values": momentum_values,
         "above_5w": above_5w,
         "above_5w_confirmed": above_5w_conf,
+        "drawdown": drawdown,
         "smas": smas,
         "tentative_weekly": tent_w,
         "tentative_monthly": tent_m,
@@ -208,5 +223,11 @@ def build_snapshot(ticker, ohlc, mode="live", today=None):
             "daily": closes.index[-1].date().isoformat(),
             "weekly": weekly.index[-1].date().isoformat(),
             "monthly": monthly.index[-1].date().isoformat(),
+            # last COMPLETED weekly bar (None if only the open bar exists) --
+            # the engine's confirmed-bar reset compares against this.
+            "weekly_confirmed": (
+                w_conf_series.index[-1].date().isoformat()
+                if len(w_conf_series) else None
+            ),
         },
     }

@@ -71,6 +71,7 @@ class ScannerBot(discord.Client):
                     return run_scan(
                         conn, self.cfg.confirm_mode,
                         m60_prox_pct=self.cfg.m60_prox_pct,
+                        dd_arm_pct=self.cfg.dd_arm_pct,
                     )
                 finally:
                     conn.close()

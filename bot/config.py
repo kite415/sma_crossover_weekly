@@ -28,6 +28,10 @@ class Config:
         # Below-60m signals are deferred until price is within this percent
         # of the 60-month SMA (see README "proximity rule").
         self.m60_prox_pct = float(os.environ.get("M60_PROXIMITY_PCT", "10"))
+        # Drawdown-episode arm: a ticker is only eligible to trigger while it
+        # is recovering from a decline of at least this percent off its high
+        # (see README "drawdown arm").
+        self.dd_arm_pct = float(os.environ.get("DD_ARM_PCT", "30"))
         # Daily scan time (America/New_York). 16:10 ET is right after the
         # 4pm close; official closing prices settle within a few minutes.
         self.scan_hour = int(os.environ.get("SCAN_HOUR", "16"))
