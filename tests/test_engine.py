@@ -25,6 +25,10 @@ SHALLOW_DD = {"peak": 110.0, "peak_date": "2026-05-01",
 # Fully recovered to a new high: episode over -> disarmed.
 NEW_HIGH_DD = {"peak": 160.0, "peak_date": TODAY,
                "episode_dd_pct": 0.0, "off_high_pct": 0.0}
+# Deep crash but the recovery is nearly done (CACI case): inside the 15%
+# off-high cap -> disarmed.
+NEARLY_DONE_DD = {"peak": 150.0, "peak_date": "2025-01-02",
+                  "episode_dd_pct": 33.0, "off_high_pct": 4.0}
 
 
 def snap(
@@ -506,10 +510,29 @@ def test_new_high_disarms_and_resets():
     assert state["phase"] == IDLE and state["setup_live"] is False
 
 
-def test_arm_threshold_arg_respected():
-    # 12% episode arms under a loose 10% threshold.
-    state, _ = entry_step(None, snap(drawdown=SHALLOW_DD), TODAY, dd_arm_pct=10.0)
+def test_recovery_inside_the_off_high_cap_stands_down():
+    # CACI case: 33% crash, but price is back within 15% of the high ->
+    # not armed, and an armed SIGNALED ticker crossing inside the cap
+    # silently resets.
+    state = seed_entry(snap(drawdown=NEARLY_DONE_DD), TODAY)
+    assert state["dd_armed"] is False and state["setup_live"] is False
+    state = seed_entry(snap(weekly=BELOW_10), TODAY)
+    state, _ = entry_step(state, snap(daily=ALL_ABOVE), TODAY)  # SIGNALED
+    state, events = entry_step(
+        state, snap(daily=ALL_ABOVE, drawdown=NEARLY_DONE_DD), TODAY
+    )
+    assert events == []
+    assert state["phase"] == IDLE and state["setup_live"] is False
+
+
+def test_arm_threshold_args_respected():
+    # 12% episode, 9% off high: arms under loosened thresholds (10% / 5%)...
+    state, _ = entry_step(None, snap(drawdown=SHALLOW_DD), TODAY,
+                          dd_arm_pct=10.0, dd_min_off_pct=5.0)
     assert state["dd_armed"] is True and state["setup_live"] is True
+    # ...but the default 15% cap alone blocks it even at dd_arm_pct=10.
+    state, _ = entry_step(None, snap(drawdown=SHALLOW_DD), TODAY, dd_arm_pct=10.0)
+    assert state["dd_armed"] is False and state["setup_live"] is False
 
 
 def test_missing_60_is_skippable_everywhere():

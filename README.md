@@ -11,7 +11,7 @@ Eligibility plus two timeframes:
 
 | Layer | Role | Condition |
 |---|---|---|
-| **Drawdown arm** | Eligibility | the stock is recovering from a drawdown **episode** that reached ≥ `DD_ARM_PCT` (default 30%) below its high (highest close in the ~10y data window). Arming latches for the whole recovery and resets when a new high ends the episode. Stocks grinding along near their highs never alert. |
+| **Drawdown arm** | Eligibility | the stock is recovering from a drawdown **episode** that reached ≥ `DD_ARM_PCT` (default 30%) below its high (highest close in the ~10y data window), **and** price still sits ≥ `DD_MIN_OFF_PCT` (default 15%) below that high. Arming latches through the meat of the recovery; it stands down once the recovery is nearly complete or a new high ends the episode. Stocks grinding along near their highs never alert. |
 | **Weekly** | Trigger | close above the 10- and 20-week SMAs (60wk is context: `60w ✓/✗`; monthly SMAs are context too, incl. `60m ✓/✗`) **and momentum confirms**: RSI(14) > 50, KDJ(9,3,3) K-line > 50, MACD(12,26) line > 0 |
 | **Daily** | Entry confirm | close above the 10/20/60-day SMAs |
 
@@ -38,7 +38,8 @@ indicator on a young ticker fails the setup). The scanner alerts on
 - **Reset** — silent, and only on *confirmed* weakness: a **completed**
   weekly close back below the 10/20-week SMAs / momentum thresholds (from a
   week ending on or after the week the setup went live, with the live bar
-  not already back above), or the drawdown episode ending at a new high.
+  not already back above), or the arm standing down (recovery inside the
+  `DD_MIN_OFF_PCT` cap or a new high).
   Mid-week wobbles on the in-progress bar hold state instead of resetting,
   so a Tuesday trigger that sags into Friday and bounces Monday does **not**
   re-announce. After a confirmed reset, reclaiming is a fresh trigger.
@@ -110,6 +111,7 @@ alert or `/sell`). Position alerts stay individual messages:
 | `SCAN_HOUR` / `SCAN_MINUTE` | scan time, America/New_York (default 16:10 Mon–Fri, right after the close) |
 | `M60_PROXIMITY_PCT` | below-60m signals stay silent until price is within this percent of the 60-month SMA (default 10) |
 | `DD_ARM_PCT` | drawdown-episode arm threshold: a ticker is only eligible to trigger while recovering from a decline of at least this percent off its high (default 30) |
+| `DD_MIN_OFF_PCT` | the arm's cap: price must still be at least this percent below the high — recoveries inside it stand down (default 15) |
 | `DB_PATH` | SQLite location (the docker volume handles this) |
 
 ## Running it

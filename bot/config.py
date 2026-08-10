@@ -32,6 +32,9 @@ class Config:
         # is recovering from a decline of at least this percent off its high
         # (see README "drawdown arm").
         self.dd_arm_pct = float(os.environ.get("DD_ARM_PCT", "30"))
+        # ...and the cap: price must still be at least this percent below
+        # the high, so recoveries that are nearly complete stand down.
+        self.dd_min_off_pct = float(os.environ.get("DD_MIN_OFF_PCT", "15"))
         # Daily scan time (America/New_York). 16:10 ET is right after the
         # 4pm close; official closing prices settle within a few minutes.
         self.scan_hour = int(os.environ.get("SCAN_HOUR", "16"))

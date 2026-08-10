@@ -8,8 +8,9 @@ Strategy recap
 Entry engine (runs over the whole universe):
   * drawdown arm  = the ticker is in a drawdown EPISODE that reached at least
     30% below its high (highest close in the ~10y data window) and hasn't
-    fully recovered yet (user 2026-08-10, replacing the monthly 10m gate).
-    Arming latches for the whole recovery; a new high ends the episode and
+    fully recovered yet (user 2026-08-10, replacing the monthly 10m gate),
+    AND price still sits at least 15% below that high (the cap; late-stage
+    recoveries stand down -- CACI case). A new high ends the episode and
     disarms. The arm is an eligibility precondition -- it is never a trigger
     leg, so becoming armed alone can't fire an alert.
   * weekly setup  = weekly close above its 10- and 20-week SMAs, AND weekly
@@ -78,13 +79,15 @@ def all_above(flags):
     return all(flags.values())
 
 
-def dd_armed(snap, pct):
+def dd_armed(snap, pct, min_off_pct=15.0):
     """Drawdown-episode arm: the decline from the (10y) high reached `pct`
-    percent and the ticker hasn't recovered to a new high yet (a new high
-    collapses episode_dd_pct to ~0). No drawdown facts -> not armed."""
+    percent AND price still sits at least `min_off_pct` percent below that
+    high (the cap: late-stage recoveries within it stand down -- the CACI
+    case, user 2026-08-10). A new high collapses both to ~0 and ends the
+    episode. No drawdown facts -> not armed."""
     dd = snap.get("drawdown") or {}
-    ep = dd.get("episode_dd_pct")
-    return ep is not None and ep >= pct
+    ep, off = dd.get("episode_dd_pct"), dd.get("off_high_pct")
+    return ep is not None and ep >= pct and (off or 0.0) >= min_off_pct
 
 
 def weekly_ok(weekly_flags):
@@ -166,9 +169,9 @@ def trigger_legs(prev, snap):
     return legs
 
 
-def seed_entry(snap, today, dd_arm_pct=30.0):
+def seed_entry(snap, today, dd_arm_pct=30.0, dd_min_off_pct=15.0):
     """First sighting of a ticker: record current truth, never alert."""
-    armed = dd_armed(snap, dd_arm_pct)
+    armed = dd_armed(snap, dd_arm_pct, dd_min_off_pct)
     weekly_all = weekly_ok(snap["weekly_above"])
     mom = momentum_ok(snap.get("momentum"))
     setup_live = armed and weekly_all and mom
@@ -195,7 +198,8 @@ def seed_entry(snap, today, dd_arm_pct=30.0):
     }
 
 
-def entry_step(prev, snap, today, m60_prox_pct=10.0, dd_arm_pct=30.0):
+def entry_step(prev, snap, today, m60_prox_pct=10.0, dd_arm_pct=30.0,
+               dd_min_off_pct=15.0):
     """
     Advance one ticker's entry machine by one scan.
 
@@ -205,14 +209,18 @@ def entry_step(prev, snap, today, m60_prox_pct=10.0, dd_arm_pct=30.0):
     no events) until price is within this percent of the 60m line; the
     stored announcement fires the scan the gap closes.
     dd_arm_pct: the drawdown-episode arm threshold (percent below the high).
+    dd_min_off_pct: the arm's cap -- price must still be at least this
+    percent below the high; recoveries inside it stand down.
     Returns (new_state, events) where events is a list of dicts:
       {"type": "TRIGGER", "legs": [...], "pending": [...], "tentative": bool}
       {"type": "BUY", "legs": [...], "pending": [...], "tentative": bool}
     """
     if prev is None:
-        return seed_entry(snap, today, dd_arm_pct=dd_arm_pct), []
+        return seed_entry(
+            snap, today, dd_arm_pct=dd_arm_pct, dd_min_off_pct=dd_min_off_pct
+        ), []
 
-    armed = dd_armed(snap, dd_arm_pct)
+    armed = dd_armed(snap, dd_arm_pct, dd_min_off_pct)
     weekly_all = weekly_ok(snap["weekly_above"])
     mom = momentum_ok(snap.get("momentum"))
     live_now = armed and weekly_all and mom

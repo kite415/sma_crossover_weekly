@@ -72,6 +72,7 @@ class ScannerBot(discord.Client):
                         conn, self.cfg.confirm_mode,
                         m60_prox_pct=self.cfg.m60_prox_pct,
                         dd_arm_pct=self.cfg.dd_arm_pct,
+                        dd_min_off_pct=self.cfg.dd_min_off_pct,
                     )
                 finally:
                     conn.close()

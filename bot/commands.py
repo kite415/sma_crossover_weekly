@@ -136,7 +136,7 @@ def register(tree, conn, cfg, run_scan_and_post):
             return
         state = db.get_ticker_state(conn, ticker)
         phase = state["phase"] if state else "(not scanned yet)"
-        armed = dd_armed(snap, cfg.dd_arm_pct)
+        armed = dd_armed(snap, cfg.dd_arm_pct, cfg.dd_min_off_pct)
         weekly_all = weekly_ok(snap["weekly_above"])
         mom = momentum_ok(snap.get("momentum"))
         live = armed and weekly_all and mom
