@@ -53,12 +53,12 @@ def _dd(snap):
     return f"−{ep:.0f}% max · {off:.0f}% off high"
 
 
-def _line(ticker, snap, legs, waits=None, with_m60=False):
+def _line(ticker, snap, legs, waits=None, with_m60=False, with_dd=False):
     parts = [", ".join(legs) if legs else "setup live"]
-    if with_m60:
-        for ctx in (_dd(snap), _w60(snap), _m60(snap)):
-            if ctx:
-                parts.append(ctx)
+    ctxs = (_dd(snap), _w60(snap), _m60(snap)) if with_m60 else (_dd(snap),) if with_dd else ()
+    for ctx in ctxs:
+        if ctx:
+            parts.append(ctx)
     if waits:
         parts.extend(waits)
     return f"**{ticker}** ${snap['daily_close']:.2f} — " + " · ".join(parts)
@@ -115,7 +115,7 @@ def scan_report(buys, watching, cats=None, exp_watch=None, exp_alerts=None):
         )
         sections.append("✅ **BUY:**\n" + "\n".join(lines))
     if watching:
-        lines = _grouped_lines(watching, lambda e: _line(e[0], e[1], e[2]), cats)
+        lines = _grouped_lines(watching, lambda e: _line(e[0], e[1], e[2], with_dd=True), cats)
         sections.append("👀 **Setup complete — watching daily confirm:**\n" + "\n".join(lines))
     for window in ("1M", "3M", "6M"):
         entries = (exp_alerts or {}).get(window)

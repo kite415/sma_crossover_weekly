@@ -114,6 +114,24 @@ binary directly (services don't run `conda activate`; find yours with
   the machine is a laptop that gets closed or travels, host on a Raspberry
   Pi instead.
 
+  **Deploying changes**: after editing code, restart the managed service —
+
+  ```bash
+  launchctl kickstart -k gui/$(id -u)/com.sma.bot
+  ```
+
+  Never run `python -m bot.main` in a terminal alongside (or instead of)
+  the service: a second instance contends for the SQLite write lock and can
+  kill the scheduled scan ("database is locked", 2026-08-11), and a
+  terminal instance dies with its window and logs to the TTY instead of
+  `data/bot.log`. To stop the bot temporarily use
+  `launchctl bootout gui/$(id -u)/com.sma.bot` (KeepAlive restarts a merely
+  killed process), then `launchctl bootstrap gui/$(id -u)
+  ~/Library/LaunchAgents/com.sma.bot.plist` to bring it back. Avoid
+  `launchctl disable`: a disabled service refuses to load later with the
+  cryptic `Bootstrap failed: 5: Input/output error` (fix:
+  `launchctl enable gui/$(id -u)/com.sma.bot`).
+
 ## 5. Sanity checks
 
 - `/status NVDA` — should answer in a few seconds with all three timeframes.

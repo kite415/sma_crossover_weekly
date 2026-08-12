@@ -50,3 +50,17 @@ def test_scan_report_flat_when_no_categories_known():
     report = scan_report(buys, [], {})
     assert "Unknown" not in report  # degraded mode: no pointless headers
     assert "AAA" in report
+
+
+def test_watching_line_shows_drawdown_context():
+    snap = _snap()
+    snap["drawdown"] = {"episode_dd_pct": 52.0, "off_high_pct": 32.0}
+    report = scan_report([], [("ROKU", snap, ["reclaimed 10wk SMA"])], {})
+    assert "−52% max · 32% off high" in report
+    # ...but not the BUY-only 60w/60m context suffixes:
+    assert "60m" not in report
+
+
+def test_watching_line_omits_drawdown_when_absent():
+    report = scan_report([], [("ROKU", _snap(), ["reclaimed 10wk SMA"])], {})
+    assert "off high" not in report
