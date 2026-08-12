@@ -64,6 +64,31 @@ alert blast for setups that completed long ago; only *new* events fire. A
 persistently strong stock therefore stays quiet until its first real
 5wk-or-deeper pullback resolves — that's by design.
 
+## Crash-recovery experiments (forward testing)
+
+Parallel test variants alongside the live strategy — tracked, never traded
+by the bot. Deliberately **forward-only** (no backtest): strategies are
+regime-dependent; the goal is evidence for what works *now*.
+
+- **A case opens** when a daily close is ≥30% below the highest close of the
+  trailing **1M / 3M / 6M** window, tagged by the *fastest* window satisfied
+  (violent / medium / slow-grind crashes — exclusive buckets). The report
+  shows `🔍 Now watching: CHRW — 31% off its 1-month high`. One active case
+  per ticker; the trough is tracked; at first deploy, in-progress crashes
+  still below the 10-week MA are reconstructed from history (silently).
+- **One Discord alert per case** — the evening of the first *daily* close
+  back above the 10-week MA ("the day it happens"). Whipsaws never re-alert.
+- **Five entry rules** are silently stamped per case (date + price):
+  `daily-cross`, `weekly-cross` (first completed Friday close above the 10wk
+  MA), `confirm-2` / `confirm-3` (2nd/3rd consecutive Friday close; a close
+  below resets), and `dual-ma` (daily close above both the 10wk and 20wk
+  MAs). Live-strategy BUYs are logged too, as the `live` baseline. The case
+  archives once all five have fired.
+- **Scoreboard**: `http://<mac>.local:8321/dashboard.html` on the home
+  network (port via `DASHBOARD_PORT`, 0 disables), regenerated after every
+  scan — per-bucket win rates and returns, open cases, recent signals.
+  `/experiments` in Discord shows the text version anywhere.
+
 ## Positions & alert routing
 
 Log what you actually buy with `/buy` — that ticker joins the **exit
@@ -99,6 +124,7 @@ alert or `/sell`). Position alerts stay individual messages:
 - `/sell <ticker> [price]` — close it (prints P&L, unmutes BUY signals)
 - `/positions` — open positions with last-scan price and P&L
 - `/status <ticker>` — fresh three-timeframe check for any symbol
+- `/experiments` — crash-recovery experiment scoreboard (text version)
 - `/watchlist add | remove | list` — personal tickers beyond the indices
 - `/scan` — run a scan on demand
 
@@ -112,6 +138,7 @@ alert or `/sell`). Position alerts stay individual messages:
 | `M60_PROXIMITY_PCT` | below-60m signals stay silent until price is within this percent of the 60-month SMA (default 10) |
 | `DD_ARM_PCT` | drawdown-episode arm threshold: a ticker is only eligible to trigger while recovering from a decline of at least this percent off its high (default 30) |
 | `DD_MIN_OFF_PCT` | the arm's cap: price must still be at least this percent below the high — recoveries inside it stand down (default 15) |
+| `DASHBOARD_PORT` | LAN port for the experiment scoreboard page (default 8321; 0 disables) |
 | `DB_PATH` | SQLite location (the docker volume handles this) |
 
 ## Running it

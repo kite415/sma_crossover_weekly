@@ -22,6 +22,11 @@ WEEKLY_SMAS = (10, 20, 60)
 DAILY_SMAS = (10, 20, 60)
 WEEKLY_EXIT_SMA = 5
 
+# Crash-recovery experiments: a "crash" is a daily close at least CRASH_PCT
+# percent below the highest close of the trailing window (trading days).
+CRASH_WINDOWS = {"1M": 21, "3M": 63, "6M": 126}
+CRASH_PCT = 30.0
+
 # 60 monthly bars for the longest SMA (+1 headroom so a value survives the
 # close-mode trim of an in-progress bar) ~= 5.1 years.
 FETCH_PERIOD = "10y"
@@ -182,6 +187,14 @@ def build_snapshot(ticker, ohlc, mode="live", today=None):
     if sma5 is not None:
         w_vals[str(WEEKLY_EXIT_SMA)] = round(sma5, 4)
 
+    # Crash-window facts: percent below the highest close of each trailing
+    # window. The experiment layer applies the CRASH_PCT threshold; alerts
+    # reuse the same numbers for display.
+    crash = {}
+    for wname, wdays in CRASH_WINDOWS.items():
+        rmax = float(closes.rolling(wdays, min_periods=1).max().iloc[-1])
+        crash[wname] = round((rmax - float(closes.iloc[-1])) / rmax * 100.0, 2)
+
     # Drawdown-episode facts ("high" = highest close inside the fetch window,
     # so ~10y, on adjusted prices). A close at a new high makes the episode
     # low equal the peak -> episode_dd_pct ~ 0, which is how the engine's
@@ -216,6 +229,7 @@ def build_snapshot(ticker, ohlc, mode="live", today=None):
         "above_5w": above_5w,
         "above_5w_confirmed": above_5w_conf,
         "drawdown": drawdown,
+        "crash": crash,
         "smas": smas,
         "tentative_weekly": tent_w,
         "tentative_monthly": tent_m,
@@ -230,4 +244,54 @@ def build_snapshot(ticker, ohlc, mode="live", today=None):
                 if len(w_conf_series) else None
             ),
         },
+    }
+
+
+def reconstruct_case(closes, lookback=252):
+    """Cold-start for the crash-recovery experiments: rebuild an open case
+    from history, or None. A case exists when some day in the trailing
+    `lookback` trading days closed >= CRASH_PCT below its rolling-window high
+    AND no daily close has beaten the 10-week MA since (entries are genuinely
+    still ahead of us; a crossed case is never partially reconstructed).
+
+    The historical daily 10wk MA is approximated from completed weekly closes
+    forward-filled to days (the live engine uses the in-progress week too;
+    for reconstruction the completed-week line is close enough and strictly
+    conservative). Runs once per ticker: its result seeds experiment_state.
+    """
+    closes = closes.dropna()
+    if len(closes) < 30:
+        return None
+    frac = 1.0 - CRASH_PCT / 100.0
+    flags = {
+        name: closes <= frac * closes.rolling(w, min_periods=1).max()
+        for name, w in CRASH_WINDOWS.items()
+    }
+    any_crash = flags["1M"] | flags["3M"] | flags["6M"]
+    recent = any_crash.iloc[-lookback:]
+    crash_days = recent[recent].index
+    if len(crash_days) == 0:
+        return None
+
+    wk = closes.resample("W-FRI").last().dropna()
+    wk = wk[wk.index.date <= closes.index[-1].date()]  # completed weeks only
+    ma_daily = wk.rolling(10).mean().reindex(closes.index, method="ffill")
+    above = closes > ma_daily  # NaN MA compares False: young history blocks
+    above_days = above[above].index
+    last_above = above_days.max() if len(above_days) else None
+
+    valid = [d for d in crash_days if last_above is None or d > last_above]
+    if not valid:
+        return None
+    opened = min(valid)
+    window = next(
+        n for n in ("1M", "3M", "6M") if flags[n][flags[n].index >= opened].any()
+    )
+    return {
+        "opened": opened.date().isoformat(),
+        "window": window,
+        "trough": round(float(closes[closes.index >= opened].min()), 4),
+        "streak": 0,
+        "last_conf_week": wk.index[-1].date().isoformat() if len(wk) else None,
+        "fired": {},
     }

@@ -10,8 +10,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 
-from bot import alerts, db, sectors, universe
-from bot.data import build_snapshot, fetch_ohlc, today_et
+from bot import alerts, db, experiments, sectors, universe
+from bot.data import build_snapshot, fetch_ohlc, reconstruct_case, today_et
 from bot.engine import entry_step, exit_step
 
 
@@ -81,6 +81,11 @@ def run_scan(conn, mode="live", tickers=None, m60_prox_pct=None, dd_arm_pct=None
                 buys += 1
                 # A same-scan trigger+BUY shows only in a BUY section.
                 triggered_this_scan.pop(ticker, None)
+                # Baseline row for the experiment scoreboard (muted or not --
+                # muting is presentation, the signal existed).
+                db.add_experiment_signal(
+                    conn, "live", "buy", ticker, today, snap["daily_close"]
+                )
                 pos = open_positions.get(ticker)
                 if pos and not pos["exit_alerted"]:
                     # Held and no exit alert yet: mute per user rule.
@@ -90,6 +95,37 @@ def run_scan(conn, mode="live", tickers=None, m60_prox_pct=None, dd_arm_pct=None
                 buy_entries.append(
                     (ticker, snap, event.get("legs") or [],
                      alerts.buy_waits(snap, event))
+                )
+
+    # ---- crash-recovery experiments (reuses the snapshots; no network) ----
+    exp_states = db.get_all_experiment_states(conn)
+    exp_watch = []   # fresh OPEN events -> "now watching" lines
+    exp_alerts = {}  # window -> [(ticker, snap, event)] for daily-cross alerts
+    exp_signals = 0
+    for ticker, snap in snapshots.items():
+        if ticker in exp_states:
+            new_case, events = experiments.exp_step(exp_states[ticker], snap, today)
+        else:
+            # First sighting: rebuild any in-progress case from history,
+            # silently (no day-one alert flood for pre-existing crashes).
+            series = closes.get(ticker)
+            new_case = (
+                reconstruct_case(series["Close"]) if series is not None else None
+            )
+            events = []
+        db.put_experiment_state(conn, ticker, new_case)
+        for event in events:
+            if event["type"] == "OPEN":
+                exp_watch.append((ticker, snap, event))
+                continue
+            exp_signals += 1
+            db.add_experiment_signal(
+                conn, event["window"], event["rule"], ticker, today,
+                event["price"], event["case_opened"], event["trough"],
+            )
+            if event["alert"]:
+                exp_alerts.setdefault(event["window"], []).append(
+                    (ticker, snap, event)
                 )
 
     watch_entries = [
@@ -106,7 +142,10 @@ def run_scan(conn, mode="live", tickers=None, m60_prox_pct=None, dd_arm_pct=None
             e[0]: sectors.category(e[0], smap.get(e[0]))
             for e in buy_entries + watch_entries
         }
-    result.digest = alerts.scan_report(buy_entries, watch_entries, cats)
+    result.digest = alerts.scan_report(
+        buy_entries, watch_entries, cats,
+        exp_watch=exp_watch, exp_alerts=exp_alerts,
+    )
 
     # ---- exit engine over held positions only ----
     for ticker, pos in open_positions.items():
@@ -138,6 +177,8 @@ def run_scan(conn, mode="live", tickers=None, m60_prox_pct=None, dd_arm_pct=None
         "triggers": triggers,
         "buys": buys,
         "positions": len(open_positions),
+        "exp_open": len(exp_watch),
+        "exp_signals": exp_signals,
         "alerts": len(result.messages) + (1 if result.digest else 0),
     }
     result.log.append(f"done: {result.stats}")

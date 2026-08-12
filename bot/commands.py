@@ -1,6 +1,8 @@
-"""Slash commands: /buy /sell /positions /status /watchlist /scan."""
+"""Slash commands: /buy /sell /positions /status /watchlist /scan /experiments."""
 
 import asyncio
+import socket
+from statistics import median
 from typing import Optional
 
 import discord
@@ -9,6 +11,7 @@ from discord import app_commands
 from bot import db, sectors, universe
 from bot.data import build_snapshot, fetch_closes, fetch_ohlc
 from bot.engine import all_above, dd_armed, momentum_ok, weekly_ok
+from bot.experiments import ENTRY_RULES, WINDOWS
 
 
 def _norm(ticker):
@@ -160,6 +163,44 @@ def register(tree, conn, cfg, run_scan_and_post):
             f"· momentum {_yes(mom)}) · 5wk exit line: {_yes(bool(snap['above_5w']))}",
         ]
         await interaction.followup.send("\n".join(lines))
+
+    # ---------------------------------------------------------- experiments
+    @tree.command(name="experiments", description="Crash-recovery experiment scoreboard (forward-testing)", guild=guild)
+    async def experiments_cmd(interaction: discord.Interaction):
+        signals = db.get_experiment_signals(conn)
+        prices = db.latest_closes(conn)
+        states = db.get_all_experiment_states(conn)
+        open_cases = sum(1 for c in states.values() if c)
+
+        lines = [f"🧪 **Experiments** — {open_cases} cases watched, "
+                 f"{len(signals)} signals logged"]
+        combos = [(w, r) for w in WINDOWS for r in ENTRY_RULES] + [("live", "buy")]
+        for window, rule in combos:
+            rows = [s for s in signals
+                    if s["window"] == window and s["rule"] == rule]
+            if not rows:
+                continue
+            rets = [
+                (prices[s["ticker"]] - s["price"]) / s["price"] * 100.0
+                for s in rows
+                if prices.get(s["ticker"]) and s["price"]
+            ]
+            if rets:
+                win = sum(1 for r in rets if r > 0) / len(rets) * 100
+                lines.append(
+                    f"`{window:>4} · {rule:<12}` {len(rows):>3} signals · "
+                    f"win {win:.0f}% · avg {sum(rets)/len(rets):+.1f}% · "
+                    f"med {median(rets):+.1f}%"
+                )
+            else:
+                lines.append(f"`{window:>4} · {rule:<12}` {len(rows):>3} signals")
+        if len(lines) == 1:
+            lines.append("No entry signals yet — they appear as watched "
+                         "recoveries cross the 10-week MA.")
+        host = socket.gethostname().removesuffix(".local")
+        if cfg.dashboard_port:
+            lines.append(f"Full scoreboard: http://{host}.local:{cfg.dashboard_port}/dashboard.html (home WiFi)")
+        await interaction.response.send_message("\n".join(lines))
 
     # ------------------------------------------------------------ watchlist
     wl = app_commands.Group(name="watchlist", description="Personal tickers beyond the S&P 500/400", guild_ids=[cfg.guild_id])

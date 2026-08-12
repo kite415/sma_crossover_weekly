@@ -39,3 +39,5 @@ class Config:
         # 4pm close; official closing prices settle within a few minutes.
         self.scan_hour = int(os.environ.get("SCAN_HOUR", "16"))
         self.scan_minute = int(os.environ.get("SCAN_MINUTE", "10"))
+        # Experiment scoreboard, served on the LAN (0 disables the server).
+        self.dashboard_port = int(os.environ.get("DASHBOARD_PORT", "8321"))

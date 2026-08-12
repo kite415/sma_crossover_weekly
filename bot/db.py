@@ -45,6 +45,21 @@ CREATE TABLE IF NOT EXISTS ticker_sectors (
     sector     TEXT,
     fetched_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS experiment_state (
+    ticker  TEXT PRIMARY KEY,
+    state   TEXT NOT NULL,          -- JSON blob from experiments.exp_step
+    updated TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS experiment_signals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    window      TEXT NOT NULL,      -- '1M' | '3M' | '6M' | 'live'
+    rule        TEXT NOT NULL,      -- entry rule name ('buy' for the live baseline)
+    ticker      TEXT NOT NULL,
+    signal_date TEXT NOT NULL,
+    price       REAL NOT NULL,
+    case_opened TEXT,               -- NULL for live-baseline rows
+    trough      REAL
+);
 """
 
 
@@ -56,7 +71,9 @@ def connect(path):
     if path != ":memory:":
         parent = os.path.dirname(os.path.abspath(path))
         os.makedirs(parent, exist_ok=True)  # sqlite won't create missing dirs
-    conn = sqlite3.connect(path)
+    # timeout=30: a writer waits out a held lock instead of failing the scan
+    # (2026-08-11: a duplicate bot instance made the default 5s trip).
+    conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -94,9 +111,55 @@ def put_ticker_state(conn, ticker, state):
     )
 
 def delete_ticker_states(conn, tickers):
-    conn.executemany(
-        "DELETE FROM ticker_state WHERE ticker = ?", [(t,) for t in tickers]
+    params = [(t,) for t in tickers]
+    conn.executemany("DELETE FROM ticker_state WHERE ticker = ?", params)
+    conn.executemany("DELETE FROM experiment_state WHERE ticker = ?", params)
+
+
+# --------------------------------------------------------------------------- #
+# Crash-recovery experiments
+# --------------------------------------------------------------------------- #
+
+def get_all_experiment_states(conn):
+    return {
+        row["ticker"]: json.loads(row["state"])
+        for row in conn.execute("SELECT ticker, state FROM experiment_state")
+    }
+
+def put_experiment_state(conn, ticker, state):
+    # state None (idle, no active case) is stored as JSON null: the presence
+    # of a row marks the ticker as seen, so cold-start reconstruction runs
+    # exactly once per ticker.
+    conn.execute(
+        "INSERT INTO experiment_state (ticker, state, updated) VALUES (?, ?, ?) "
+        "ON CONFLICT(ticker) DO UPDATE SET state = excluded.state, "
+        "updated = excluded.updated",
+        (ticker, json.dumps(state), utcnow()),
     )
+
+def add_experiment_signal(conn, window, rule, ticker, signal_date, price,
+                          case_opened=None, trough=None):
+    conn.execute(
+        "INSERT INTO experiment_signals "
+        "(window, rule, ticker, signal_date, price, case_opened, trough) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (window, rule, ticker, signal_date, price, case_opened, trough),
+    )
+
+def get_experiment_signals(conn):
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM experiment_signals ORDER BY signal_date, id"
+        )
+    ]
+
+def latest_closes(conn):
+    """ticker -> last scanned daily close (for scoring signals off-network)."""
+    return {
+        row["ticker"]: json.loads(row["state"]).get("daily_close")
+        for row in conn.execute("SELECT ticker, state FROM ticker_state")
+    }
 
 
 # --------------------------------------------------------------------------- #

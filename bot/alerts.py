@@ -80,11 +80,34 @@ def _grouped_lines(entries, line_fn, cats):
     return out
 
 
-def scan_report(buys, watching, cats=None):
-    """One message per scan, two mutually exclusive sections, entries grouped
-    by sector category (Tech first). buys entries are (ticker, snap, legs,
-    waits); watching entries (ticker, snap, legs); cats maps ticker ->
-    category. Empty sections are omitted; both empty -> None."""
+WINDOW_LABELS = {"1M": "1-month", "3M": "3-month", "6M": "6-month"}
+
+
+def _exp_watch_line(ticker, snap, event):
+    off = event.get("off_pct")
+    label = WINDOW_LABELS.get(event["window"], event["window"])
+    return (
+        f"• **{ticker}** ${snap['daily_close']:.2f} — "
+        f"{off:.0f}% off its {label} high"
+    )
+
+
+def _exp_alert_line(ticker, snap, event):
+    trough = event.get("trough")
+    px = snap["daily_close"]
+    parts = [f"crashed {event.get('case_opened', '?')}"]
+    if trough:
+        parts.append(f"trough ${trough:.2f}")
+        parts.append(f"{(px - trough) / trough * 100:+.1f}% off trough")
+    return f"• **{ticker}** ${px:.2f} — " + " · ".join(parts)
+
+
+def scan_report(buys, watching, cats=None, exp_watch=None, exp_alerts=None):
+    """One message per scan. Live-strategy sections first (mutually
+    exclusive, sector-grouped, Tech first), then the crash-recovery
+    experiment sections, each test under its own header (user 2026-08-11:
+    no generic "Experiments" umbrella). Empty sections are omitted; nothing
+    at all -> None."""
     sections = []
     if buys:
         lines = _grouped_lines(
@@ -94,6 +117,20 @@ def scan_report(buys, watching, cats=None):
     if watching:
         lines = _grouped_lines(watching, lambda e: _line(e[0], e[1], e[2]), cats)
         sections.append("👀 **Setup complete — watching daily confirm:**\n" + "\n".join(lines))
+    for window in ("1M", "3M", "6M"):
+        entries = (exp_alerts or {}).get(window)
+        if not entries:
+            continue
+        label = WINDOW_LABELS.get(window, window)
+        sections.append(
+            f"🧪 **Crashed 30% off {label} high — closed above 10wk MA today:**\n"
+            + "\n".join(_exp_alert_line(t, s, e) for t, s, e in entries)
+        )
+    if exp_watch:
+        sections.append(
+            "🔍 **Now watching (fresh 30% crash):**\n"
+            + "\n".join(_exp_watch_line(t, s, e) for t, s, e in exp_watch)
+        )
     return "\n\n".join(sections) if sections else None
 
 

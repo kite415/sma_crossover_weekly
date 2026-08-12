@@ -5,17 +5,42 @@ Run with: python -m bot.main  (or via docker compose up -d)
 """
 
 import asyncio
+import functools
+import http.server
 import logging
+import socket
+import threading
 
 import discord
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from bot import alerts, commands as bot_commands, db
+from bot import alerts, commands as bot_commands, dashboard, db
 from bot.config import Config
 from bot.scan import run_scan
 
 log = logging.getLogger("sma-bot")
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args):  # keep bot.log free of access noise
+        pass
+
+
+def start_dashboard_server(port, directory="data"):
+    """Serve the scoreboard (data/dashboard.html) read-only on the LAN."""
+    handler = functools.partial(_QuietHandler, directory=directory)
+    try:
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler)
+    except OSError as exc:
+        log.warning("dashboard server not started (port %s): %s", port, exc)
+        return None
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    log.info(
+        "dashboard at http://%s.local:%s/dashboard.html",
+        socket.gethostname().removesuffix(".local"), port,
+    )
+    return server
 
 
 class ScannerBot(discord.Client):
@@ -50,9 +75,24 @@ class ScannerBot(discord.Client):
             "scheduled daily scan %02d:%02d America/New_York Mon-Fri",
             self.cfg.scan_hour, self.cfg.scan_minute,
         )
+        if self.cfg.dashboard_port:
+            start_dashboard_server(self.cfg.dashboard_port)
+            await self.refresh_dashboard()
 
     async def on_ready(self):
         log.info("logged in as %s; alert channel %s", self.user, self.cfg.alert_channel_id)
+
+    async def refresh_dashboard(self):
+        def regen():
+            conn = db.connect(self.cfg.db_path)
+            try:
+                dashboard.write(conn)
+            finally:
+                conn.close()
+        try:
+            await asyncio.to_thread(regen)
+        except Exception:
+            log.exception("dashboard regeneration failed")
 
     async def run_scan_and_post(self, manual=False):
         if self._scan_lock.locked():
@@ -86,6 +126,8 @@ class ScannerBot(discord.Client):
 
             for line in result.log:
                 log.info(line)
+
+            await self.refresh_dashboard()
 
             sent = 0
             if result.digest:
